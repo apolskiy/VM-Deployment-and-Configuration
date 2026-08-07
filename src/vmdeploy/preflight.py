@@ -117,10 +117,18 @@ def _windows_available_ram_mb() -> int | None:
     Returns:
         Available RAM in megabytes, or None if the call fails.
     """
+    # ctypes.windll exists only on Windows. Reaching it via getattr keeps this
+    # module type-checkable on Linux (CI), where a static ctypes.windll access
+    # is an error, without needing a platform-specific type: ignore that would
+    # itself be flagged as unused on Windows.
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
+
     status = _MemoryStatusEx()
     # dwLength mirrors the Win32 field name and is set as the API requires.
     status.dwLength = ctypes.sizeof(_MemoryStatusEx)  # pylint: disable=invalid-name,attribute-defined-outside-init
-    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+    if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
     return int(status.ullAvailPhys / _MB)
 
