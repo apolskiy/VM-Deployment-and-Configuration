@@ -1,0 +1,58 @@
+# Container deployment of the same cluster the VirtualBox path builds: a load
+# balancer over two Apache backends, plus the encrypted inventory service. It
+# uses the same hostnames (apjump, apnode1, apnode2), so the existing E2E suite
+# validates it unchanged — point pytest at localhost:
+#
+#   docker compose up --build -d
+#   PYTHONPATH=src python -m pytest --require-cluster \
+#       --balancer-url http://localhost --inventory-url http://localhost:5090
+#   docker compose down
+#
+# Anyone who clones the repo can run this — no VirtualBox, no secrets. See the
+# README "Run it in containers" section.
+
+services:
+  # One-shot: generate the AES key and write the seeded encrypted datastore to
+  # the shared volume, then exit. The inventory service waits for it to finish.
+  seeder:
+    build:
+      context: .
+      dockerfile: docker/seeder/Dockerfile
+    volumes:
+      - ./.compose-data:/data
+
+  apnode1:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      BACKEND_HOST: apnode1
+
+  apnode2:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      BACKEND_HOST: apnode2
+
+  apjump:
+    build:
+      context: .
+      dockerfile: docker/jump/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - apnode1
+      - apnode2
+
+  inventory:
+    build:
+      context: .
+      dockerfile: docker/inventory/Dockerfile
+    ports:
+      - "5090:5090"
+    volumes:
+      - ./.compose-data:/data
+    depends_on:
+      seeder:
+        condition: service_completed_successfully

@@ -1,0 +1,82 @@
+# Cluster topology for a local VirtualBox host.
+#
+# Portability: paths use "~" (your home directory) and environment variables
+# such as %USERPROFILE% and %VBOX_MSI_INSTALL_PATH%, which the loader expands.
+# Nothing here is tied to a specific user account, so this file works unchanged
+# on any machine where the referenced tools are installed. Override any value
+# to match your environment.
+#
+# This file contains NO secrets: it references key *paths*, while the key
+# material itself lives outside the repository and is gitignored.
+#
+# Before deploying or tearing down, run `vmdeploy preflight` (or
+# scripts/preflight.ps1) to confirm the host has enough RAM and disk and that
+# the required tools and keys are present.
+
+[ssh]
+# Operational login account created by `vmdeploy setup` and baked into your
+# golden image. This is a neutral default so no personal account name lives in
+# the public repository. Override per machine in cluster.local.toml (gitignored)
+# or with the VMDEPLOY_SSH_USER environment variable.
+user = "vmadmin"
+key_path = "~/.vmdeploy/keys/vm_key"
+connect_timeout_seconds = 30
+command_timeout_seconds = 300
+
+[virtualbox]
+# %VBOX_MSI_INSTALL_PATH% is set by the standard Windows VirtualBox installer
+# and already ends with a separator. On Linux/macOS use "/usr/bin/VBoxManage".
+vboxmanage = "%VBOX_MSI_INSTALL_PATH%VBoxManage.exe"
+# The machine exported as the golden image. It must not be a cluster member.
+# Note: whether the template VM must be powered off during a run is specific to
+# your environment. On a RAM-constrained host (such as the reference 16 GB
+# machine) the template's own allocation is what funds the guests, so it is
+# shut off; a host with ample RAM can leave it running.
+template_vm = "apubuntuD"
+template_ova = "~/templates/apcluster-golden.ova"
+memory_mb = 1024
+cpus = 1
+# Ubuntu with Guest Additions needs roughly two minutes to boot and report a
+# DHCP lease; the ceiling is generous to absorb a slow first boot after the
+# machine ID is regenerated.
+boot_timeout_seconds = 420
+
+[jump]
+vm_name = "apjump"
+hostname = "apjump"
+http_port = 80
+
+[[backend]]
+vm_name = "apnode1"
+hostname = "apnode1"
+http_port = 8080
+
+[[backend]]
+vm_name = "apnode2"
+hostname = "apnode2"
+http_port = 8080
+
+[inventory]
+service_port = 5090
+remote_dir = "/opt/inventory"
+key_file = "~/.vmdeploy/keys/inventory.key"
+datastore_name = "inventory.enc"
+# Canonical encrypted manifest on the automation host. Both deploy and teardown
+# rewrite it, so a durable record of cluster state survives the jump station.
+# Lives beside the key, outside the repository, and is gitignored.
+manifest_file = "~/.vmdeploy/inventory.enc"
+
+[website]
+# The static site the backends serve. Set these to YOUR own GitHub Pages site
+# in cluster.local.toml (gitignored) — the committed defaults are placeholders
+# so no personal account appears in the public repository.
+source_url = "https://your-org.github.io/"
+archive_url = "https://github.com/your-org/your-site/archive/refs/heads/main.tar.gz"
+document_root = "/var/www/html"
+
+[build]
+# Go toolchain pinned into the golden image. The template build downloads this
+# exact archive from go.dev and verifies its SHA-256 before extracting, so
+# every image rebuild is reproducible and a substituted archive fails closed.
+go_version = "1.26.5"
+go_sha256 = "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"

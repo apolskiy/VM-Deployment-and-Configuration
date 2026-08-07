@@ -1,0 +1,49 @@
+# ============================================================================
+# cluster.local.toml.example  —  first-run template for a new engineer
+# ============================================================================
+#
+# The public repository contains NO usernames and NO keys. You supply your own
+# by copying this file and filling in the values for YOUR machine:
+#
+#     cp config/cluster.local.toml.example config/cluster.local.toml
+#
+# The real file (config/cluster.local.toml) is gitignored and is deep-merged
+# over the committed config/cluster.toml, so nothing personal is ever published.
+#
+# ---------------------------------------------------------------------------
+# What you need before you start
+# ---------------------------------------------------------------------------
+# A VirtualBox template VM (name it to match [virtualbox].template_vm in
+# cluster.toml, default "apubuntuD") running Ubuntu with Guest Additions, and
+# ONE account you can already SSH into with a key. That account is your
+# "bootstrap" identity — you created it when you installed Ubuntu, or it came
+# with a base image your team shares privately. It only has to work once.
+#
+# ---------------------------------------------------------------------------
+# Fill these in
+# ---------------------------------------------------------------------------
+
+[ssh]
+# Your existing bootstrap account on the template, and the private key that
+# authenticates to it. `vmdeploy setup` connects with this identity a single
+# time to create the hardened operational user, then rewrites THIS file to
+# point at that new user and its freshly generated key.
+user = "your-bootstrap-user"
+key_path = "~/.ssh/your_bootstrap_key"
+
+# ---------------------------------------------------------------------------
+# Optional per-machine overrides (uncomment only what differs from cluster.toml)
+# ---------------------------------------------------------------------------
+
+# [virtualbox]
+# vboxmanage = "C:/Program Files/Oracle/VirtualBox/VBoxManage.exe"
+# template_ova = "~/.vmdeploy/apcluster-golden.ova"
+
+# [inventory]
+# key_file = "~/.vmdeploy/keys/inventory.key"
+# manifest_file = "~/.vmdeploy/inventory.enc"
+
+# The static site your backends serve — point this at your own GitHub Pages repo.
+# [website]
+# source_url = "https://your-org.github.io/"
+# archive_url = "https://github.com/your-org/your-site/archive/refs/heads/main.tar.gz"

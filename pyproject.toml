@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vmdeploy"
+version = "1.0.0"
+description = "VirtualBox multi-VM provisioning, Apache load balancing, and encrypted inventory automation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "VM-Deployment-and-Configuration contributors" }]
+dependencies = [
+    "paramiko>=4.0.0",
+    "cryptography>=46.0.0",
+    "requests>=2.32.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.0.0",
+    "pytest-playwright>=0.8.0",
+    "allure-pytest>=2.16.0",
+]
+dev = ["pylint>=4.0.0", "mypy>=1.11", "types-paramiko", "types-requests"]
+
+[project.scripts]
+vmdeploy = "vmdeploy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "e2e: end-to-end tests requiring a live provisioned cluster",
+    "loadbalancing: load balancer distribution tests",
+    "inventory: encrypted inventory service tests",
+    "slow: tests that take more than a few seconds",
+]
+
+[tool.pylint.main]
+init-hook = "import sys; sys.path.insert(0, 'src')"
+jobs = 0
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-args = 8
+max-positional-arguments = 8
+max-attributes = 12
+max-locals = 20
+# Test classes that group a single scenario are legitimate; they exist for
+# Allure story grouping, not for code reuse.
+min-public-methods = 1
+
+[tool.pylint."messages control"]
+disable = [
+    # The provisioning role modules intentionally share the same SSH
+    # command-dispatch shape; deduplicating them would obscure the per-role
+    # sequencing that operators need to read literally.
+    "duplicate-code",
+    # A pytest test function that consumes a fixture necessarily shadows the
+    # fixture's own name. This is the framework's idiom, not a defect.
+    "redefined-outer-name",
+]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["vmdeploy"]
+mypy_path = "src"
+strict = true
+warn_unreachable = true

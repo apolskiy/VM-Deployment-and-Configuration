@@ -216,3 +216,36 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- vmdeploy: secrets, keys, and generated infrastructure artifacts ----
+# Never commit private keys or the inventory encryption key.
+*.ppk
+*.pem
+id_rsa*
+vm_key*
+secrets.toml
+cluster.local.toml
+inventory.key
+*.key
+
+# Golden OVA templates and exported appliances (multi-GB binaries).
+*.ova
+*.ovf
+*.vmdk
+*.vdi
+
+# Test and report output.
+allure-results/
+allure-report/
+test-results/
+.playwright/
+site-content/
+
+# JetBrains IDE workspace files.
+.idea/
+
+# Encrypted inventory manifest (canonical local record).
+*.enc
+
+# Docker compose seeded data (generated at runtime).
+.compose-data/

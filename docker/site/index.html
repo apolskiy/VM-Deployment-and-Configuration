@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>vmdeploy demo site</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
+        h1 { font-size: 1.6rem; }
+        code { background: #eee; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>vmdeploy demo site</h1>
+    <p>
+        This page is served by an Apache backend behind the load balancer. Reload
+        it a few times: the <code>X-Backend-Host</code> response header, and the
+        backend identity meta tag injected into this document, change as the
+        balancer spreads requests across the backends.
+    </p>
+    <p>The encrypted cluster inventory is served separately at <code>/clusterview</code> on the inventory port.</p>
+</body>
+</html>
