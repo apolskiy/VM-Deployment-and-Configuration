@@ -8,7 +8,7 @@ malformed key or hostname produces a VM that boots fine and then refuses every
 login, which is expensive to diagnose against a headless guest and cheap to
 reject here.
 
-Everything runs offline against a real ISO on disk — no hypervisor involved.
+Everything runs offline against a real ISO on disk, with no hypervisor involved.
 """
 
 from __future__ import annotations

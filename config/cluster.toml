@@ -36,8 +36,8 @@ template_vm = "apubuntuD"
 template_ova = "~/templates/apcluster-golden.ova"
 # Where the golden image is published and pulled from, as an OCI reference.
 # This is configuration rather than documentation on purpose: registries get
-# retired and accounts get cleaned up, so moving the image — or republishing it
-# rebuilt on a newer Ubuntu — is a one-line change here that scripts/publish-image.ps1
+# retired and accounts get cleaned up, so moving the image, or republishing it
+# rebuilt on a newer Ubuntu, is a one-line change here that scripts/publish-image.ps1
 # and scripts/pull-image.ps1 both follow. Override per machine in cluster.local.toml.
 template_image_ref = "ghcr.io/apolskiy/apcluster-golden:latest"
 memory_mb = 1024
@@ -74,7 +74,7 @@ manifest_file = "~/.vmdeploy/inventory.enc"
 
 [website]
 # The static site the backends serve. Set these to YOUR own GitHub Pages site
-# in cluster.local.toml (gitignored) — the committed defaults are placeholders
+# in cluster.local.toml (gitignored). The committed defaults are placeholders
 # so no personal account appears in the public repository.
 source_url = "https://your-org.github.io/"
 archive_url = "https://github.com/your-org/your-site/archive/refs/heads/main.tar.gz"

@@ -39,7 +39,7 @@ jobs:
           go test ./...
 
   # End-to-end against the container stack. GitHub runners have Docker, so this
-  # exercises the real load balancer, backends, and inventory service — the same
+  # exercises the real load balancer, backends, and inventory service. It is the same
   # suite the VirtualBox path runs, pointed at the compose stack.
   compose-e2e:
     runs-on: ubuntu-latest
@@ -181,18 +181,40 @@ jobs:
             echo "MISMATCH between published and pulled appliance"; exit 1
           fi
 
-      # Best effort, and deliberately non-fatal. GITHUB_TOKEN carries a
-      # `packages: write` permission but no delete scope, so the registry may
-      # refuse this; the fixed tag above is what actually bounds the clutter.
-      # Runs even when the round trip failed, so a failure leaves nothing behind.
+      # Deletes the throwaway artifact so it does not sit in the owner's public
+      # package list beside the real image.
+      #
+      # This needs GHCR_CLEANUP_TOKEN: a PAT with `delete:packages`. GITHUB_TOKEN
+      # cannot do it, because `packages: write` grants no delete right, confirmed by a
+      # live run returning "denied". A repository secret is the right place for
+      # this: it is encrypted, never downloadable as a repository file, and only
+      # decrypts inside runs of this repo. That is a different thing from the
+      # published image, which must carry no credentials because anyone can
+      # download and open it.
+      #
+      # Non-fatal by design, and skipped cleanly when the secret is absent, so a
+      # fork or a fresh clone still passes CI. Runs even when the round trip
+      # failed, so a failure leaves nothing behind either.
       - name: Remove the CI test artifact
         if: always()
         continue-on-error: true
+        env:
+          CLEANUP_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN }}
         run: |
           ref=$(cat /tmp/citest-ref 2>/dev/null) || exit 0
-          if oras manifest delete --force "$ref"; then
-            echo "deleted $ref"
+          package="${ref#*/*/}"; package="${package%%:*}"
+          if [ -z "$CLEANUP_TOKEN" ]; then
+            echo "GHCR_CLEANUP_TOKEN is not set, so '$package' is left in place."
+            echo "The tag is reused rather than per-commit, so it does not accumulate."
+            exit 0
+          fi
+          status=$(curl -sS -o /tmp/cleanup.out -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer $CLEANUP_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/$package")
+          if [ "$status" = "204" ]; then
+            echo "deleted the '$package' package"
           else
-            echo "could not delete $ref (expected: GITHUB_TOKEN cannot delete packages)."
-            echo "It is a single reusable tag, so it does not accumulate."
+            echo "could not delete '$package' (HTTP $status):"
+            cat /tmp/cleanup.out
           fi

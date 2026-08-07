@@ -67,9 +67,9 @@ _PREBAKE_SNAPSHOT: Final[str] = "vmdeploy-prebake"
 def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: Path) -> None:
     """Bake dependencies into the template, sanitise it, and export a clean OVA.
 
-    The template box is snapshotted first, so every mutation the build makes —
+    The template box is snapshotted first, so every mutation the build makes,
     installing dependencies, and then stripping credentials and build tooling
-    from the image — is rolled back afterward. The exported OVA is a clean,
+    from the image, is rolled back afterward. The exported OVA is a clean,
     distributable runtime artefact (no cached registry or git credentials, no
     git/docker/gh), while the template box is returned to exactly its prior
     state, credentials and all, for continued use.
@@ -190,7 +190,7 @@ def _seed_directory(config: ClusterConfig) -> Path:
     The seeds sit beside the golden image they pair with. They stay on disk for
     the life of the guest: cloud-init re-reads the datasource on every boot, and
     an absent one would look like a new instance and re-run configuration. They
-    hold nothing secret — a hostname and a public key.
+    hold nothing secret: a hostname and a public key.
 
     Args:
         config: The cluster configuration.

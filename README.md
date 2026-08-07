@@ -10,7 +10,7 @@ It is built to be a **deterministic, QA-ready harness**: one golden image with
 the toolchain and app baked in, deploys that install nothing over the network,
 a self-checking configure step that recompiles only on real source changes, and
 a Playwright/Allure suite that exercises the running cluster (load balancing,
-encrypted inventory, and — see *HA testing* — failover).
+encrypted inventory, and failover, covered under *HA testing*).
 
 Automation is Python; the inventory service is Go; validation is pytest with
 Playwright and Allure.
@@ -21,10 +21,10 @@ Playwright and Allure.
 
 Two ways to run this. Pick by what you want.
 
-### A. Just see it work — containers, ~2 minutes, nothing to install but Docker
+### A. Just see it work: containers, ~2 minutes, nothing to install but Docker
 
 No VirtualBox, no image download, no secrets. Works on Linux/macOS, or Windows
-**if** Hyper-V is enabled (which is mutually exclusive with VirtualBox — see the
+**if** Hyper-V is enabled (which is mutually exclusive with VirtualBox, see the
 note under *Try it in containers*).
 
 ```bash
@@ -38,7 +38,7 @@ PYTHONPATH=src python -m pytest --require-cluster \
 docker compose down -v
 ```
 
-### B. The real thing — three Ubuntu VMs on a Windows host with VirtualBox
+### B. The real thing: three Ubuntu VMs on a Windows host with VirtualBox
 
 ```powershell
 # 0. Prerequisites: VirtualBox 7.x, Python 3.11+, Go 1.26+, ~28 GB free, 8 GB RAM.
@@ -46,7 +46,7 @@ git clone https://github.com/apolskiy/VM-Deployment-and-Configuration.git
 cd VM-Deployment-and-Configuration
 python -m pip install -r requirements.txt
 
-# 1+2. Generate YOUR keys and get the image. Two routes — pick one.
+# 1+2. Generate YOUR keys and get the image. Two routes, pick one.
 #
 #   Route A: use the published image (no Ubuntu VM of your own needed).
 python -m vmdeploy.cli setup --keys-only  #    keys only; nothing to harden yet
@@ -73,11 +73,11 @@ python -m vmdeploy.cli teardown --yes
 ```
 
 Steps 3–4 are also available as one command: `python -m vmdeploy.cli deploy`
-(route B only — `deploy` rebuilds the image, which route A does not have the
+(route B only, since `deploy` rebuilds the image, which route A does not have the
 source VM for).
 
 **Why `--keys-only` exists:** plain `setup` hardens a template VM you own, so it
-needs one to exist. If you pulled the image there is nothing to harden — but you
+needs one to exist. If you pulled the image there is nothing to harden, but you
 still need the keypair whose public half goes into each guest's seed, and the
 AES key for the inventory. `--keys-only` generates exactly those and stops,
 contacting nothing.
@@ -87,7 +87,7 @@ contacting nothing.
 browser. Both are also reachable at the jump station's IP, which
 `vmdeploy.cli status` prints.
 
-**If you only have one machine and it runs VirtualBox**, use path B — the
+**If you only have one machine and it runs VirtualBox**, use path B, because the
 container path cannot run alongside VirtualBox on Windows.
 
 ---
@@ -98,7 +98,7 @@ container path cannot run alongside VirtualBox on Windows.
 Windows host  (VirtualBox 7.2.14)
 │
 ├── apubuntuD ......... golden template SOURCE (off while the cluster runs on
-│                       this 16 GB host — see note below). `template` bakes
+│                       this 16 GB host, see note below). `template` bakes
 │                       Apache + pinned Go + the inventory binary in, exports:
 │                            │
 │                            │  VBoxManage export → apcluster-golden.ova
@@ -115,8 +115,8 @@ Windows host  (VirtualBox 7.2.14)
 
 `apubuntuD` is the golden-image source: a prepared Ubuntu VM that `template`
 bakes dependencies into and exports as `apcluster-golden.ova`. Every cluster
-guest is a clone of that image, and takes its identity — hostname, SSH host
-keys, machine ID, and the only account key that will work — from a small
+guest is a clone of that image, and takes its identity (hostname, SSH host
+keys, machine ID, and the only account key that will work) from a small
 cloud-init seed attached at import. The shared image itself holds none of that.
 
 ### How a request is traced back to a backend
@@ -139,8 +139,8 @@ balanced.
 There are two deployment targets that build the same cluster and pass the same
 E2E suite:
 
-- **VirtualBox** — real Ubuntu VMs from a golden image (the rest of this README).
-- **Docker Compose** — the same load balancer, two backends, and inventory
+- **VirtualBox**: real Ubuntu VMs from a golden image (the rest of this README).
+- **Docker Compose**: the same load balancer, two backends, and inventory
   service as containers. Nothing to install but Docker, and it runs in CI.
 
 Anyone who clones the repo can bring the whole cluster up and verify it:
@@ -160,12 +160,12 @@ docker compose down -v
 
 The stack uses the same hostnames (`apjump`, `apnode1`, `apnode2`) and the same
 encrypted-inventory wire format as the VM path, so the identical test suite
-validates both. GitHub Actions runs this on every push — see
+validates both. GitHub Actions runs this on every push. See
 `.github/workflows/ci.yml`.
 
 > **Windows note:** you cannot run this container stack and the VirtualBox path
 > on the same Windows host at the same time. Docker Desktop's Hyper-V/WSL2
-> backend and VirtualBox contend for the hypervisor — enabling Hyper-V for
+> backend and VirtualBox contend for the hypervisor, so enabling Hyper-V for
 > Docker stops VirtualBox from running, and vice versa. On a VirtualBox host,
 > leave Hyper-V disabled and let **GitHub Actions** (Linux runners, native
 > Docker, no conflict) validate the container path. Run containers locally only
@@ -185,7 +185,7 @@ python -m vmdeploy.cli provision
 Both scripts read the reference from **`[virtualbox].template_image_ref`** in
 `config/cluster.toml`, so no command line carries a registry name. That is
 deliberate: registries get retired and accounts get cleaned up, so moving the
-image — or republishing it rebuilt on a newer Ubuntu — is a one-line config
+image, or republishing it rebuilt on a newer Ubuntu, is a one-line config
 change that every script follows, instead of an edit to documentation that
 readers may have already copied. Pass `-Ref` to override for a one-off.
 
@@ -198,7 +198,7 @@ Publishing (only the maintainer needs this):
 scripts\publish-image.ps1
 ```
 
-> **A published GHCR package is private by default — repository visibility does
+> **A published GHCR package is private by default. Repository visibility does
 > not propagate to packages.** Until it is made public once in the package's
 > settings, an anonymous `pull-image.ps1` fails with a `401`, which looks like a
 > broken project rather than a permissions setting. `pull-image.ps1` says so in
@@ -207,7 +207,7 @@ scripts\publish-image.ps1
 **The image is safe to publish because it contains no credentials at all.**
 Sanitisation strips every cached registry, git, and `gh` credential, locks every
 account, and removes **every `authorized_keys`, including the builder's own**.
-A downloaded appliance therefore has no usable login — verified by booting the
+A downloaded appliance therefore has no usable login, verified by booting the
 exported OVA with no seed attached and confirming SSH answers
 `Permission denied (publickey,password)` for the builder's own key.
 
@@ -256,7 +256,7 @@ the local Go-source fingerprint against the one baked into the image:
   the pinned Go and recompiles, then restamps the fingerprint.
 
 So the running system is verified against source on every configure and updated
-only when it has genuinely drifted — no unnecessary rebuilds, no silent
+only when it has genuinely drifted, with no unnecessary rebuilds, no silent
 staleness. Secrets are never baked in: the AES key and datastore are
 cluster-specific and are written to each clone at configure time, not into the
 shared image.
@@ -273,7 +273,7 @@ and supplying identity per guest at deploy time.
 **What the image build removes** (`sanitize_image`, run just before export):
 
 - every cached Docker/registry, git, and `gh` credential, and shell history;
-- every SSH key, **including the operational account's `authorized_keys`** — the
+- every SSH key, **including the operational account's `authorized_keys`**. The
   build fails rather than exports if one survives;
 - every human account except the operational one, which is left in place but
   has no way in;
@@ -287,7 +287,7 @@ Ubuntu's installer disables cloud-init after first boot and pins
 removed, `NoCloud` is pinned explicitly, and `cloud-init clean --logs
 --machine-id` makes the next boot a genuine first boot. Ordering matters here:
 `clean` runs the hooks in `/etc/cloud/clean.d`, which delete drop-in
-configuration, so vmdeploy's drop-ins are written *after* the clean — including
+configuration, so vmdeploy's drop-ins are written *after* the clean, including
 one that re-disables cloud-init's network handling, because the installer's
 version of that setting is itself removed by the clean.
 
@@ -317,7 +317,7 @@ now exists before first boot, so that pass and its reboot are gone.
 
 ## Encrypted inventory and the manifest
 
-The registry is not merely encoded — base64 is an encoding, not a cipher. It is
+The registry is not merely encoded, because base64 is an encoding, not a cipher. It is
 protected with authenticated encryption:
 
 ```
@@ -346,7 +346,7 @@ lifecycle commands rewrite it, so it never goes stale:
 
 The same Go binary that serves the registry doubles as an offline manifest tool
 (a `manifest` subcommand), reusing the identical AES-256-GCM `Store`, `Record`
-type, and wire format — so the file the service serves live and the file the
+type, and wire format, so the file the service serves live and the file the
 utility reads are the same contract, and the Go tool decrypts what the Python
 side wrote:
 
@@ -436,7 +436,7 @@ tests/
 - **Python 3.11+** (3.14 in use here)
 - A template VM registered with VirtualBox, running Ubuntu with **Guest
   Additions installed**, and **one bootstrap account you can already SSH into
-  with a key** — the account you created when you installed Ubuntu, or one from
+  with a key**, the account you created when you installed Ubuntu, or one from
   a base image shared privately by your team. It only has to work once.
 
 ### First-time setup for a new engineer
@@ -458,7 +458,7 @@ copy config\cluster.local.toml.example config\cluster.local.toml
 #    back into cluster.local.toml.
 python -m vmdeploy.cli setup          # or: scripts\setup.ps1
 
-# 3. Build the golden image and deploy — now as the hardened user.
+# 3. Build the golden image and deploy, now as the hardened user.
 python -m vmdeploy.cli deploy
 ```
 
@@ -470,7 +470,7 @@ the repo. See **Security model** below.
 ### Configure
 
 `config/cluster.toml` is the committed base. It holds **no secrets and no
-account name** — only the pinned toolchain and portable paths. Anything
+account name**, only the pinned toolchain and portable paths. Anything
 personal or machine-specific goes in `config/cluster.local.toml` (gitignored),
 which is deep-merged over the base; `VMDEPLOY_SSH_USER` overrides the user for a
 one-off run.
@@ -481,7 +481,7 @@ shipped file works unchanged on any machine. An undefined variable is rejected
 up front rather than silently resolving to the wrong path.
 
 ```toml
-# config/cluster.toml (committed — neutral defaults only)
+# config/cluster.toml (committed, neutral defaults only)
 [ssh]
 user     = "vmadmin"                 # operational account created by `setup`
 key_path = "~/.vmdeploy/keys/vm_key"
@@ -505,7 +505,7 @@ front.
 
 Provisioning boots several VMs and exports a multi-gigabyte appliance, so it
 fails slowly when the host is short on RAM or disk or is missing a tool or key.
-**Run preflight first** — `deploy` runs it automatically and aborts on any
+**Run preflight first**. `deploy` runs it automatically and aborts on any
 hard failure (override with `--skip-preflight`):
 
 ```powershell
@@ -517,20 +517,30 @@ directory, host RAM (guests × `memory_mb` + headroom vs. available), host disk
 (on the VirtualBox machine folder), and whether a golden OVA or the template VM
 is available. It exits non-zero on any FAIL, so it also gates CI. Run it before
 `teardown` too, to confirm the environment is intact. Note that with the cluster
-already running, the RAM check will report the running guests' memory as in use —
-tear the cluster down before a fresh deploy.
+already running, the RAM check will report the running guests' memory as in
+use, so tear the cluster down before a fresh deploy.
 
 ---
 
 ## Security model
 
 The repository is safe to publish because it contains automation, not
-credentials — the same principle as any public Terraform or Ansible project.
+credentials, the same principle as any public Terraform or Ansible project.
+
+**Where the boundary actually is: the *artifact*, not the *pipeline*.** Anything
+distributed, meaning this repository and the golden image, must carry no
+credentials, because anyone can download it, open it, and read whatever is
+inside, forever.
+The build and CI *pipeline* is a different matter: GitHub Actions Secrets are
+encrypted, are never downloadable as repository files, and decrypt only inside
+runs of this repository, so they are never handed to anyone who deploys the
+image. Someone who pulls the image and deploys it locally receives automation
+and an appliance, and none of the maintainer's credentials.
 
 - **No secrets in git.** `.gitignore` blocks private keys (`vm_key*`, `*.pem`,
   `id_rsa*`), the AES inventory key and manifest (`*.key`, `*.enc`), and the
   local overlay (`cluster.local.toml`). The committed `cluster.toml` carries a
-  neutral `vmadmin` default, never a real account name — so crawlers scraping
+  neutral `vmadmin` default, never a real account name, so crawlers scraping
   the repo find nothing to target, hashed or otherwise. **Anything committed to
   a public repo is downloadable forever, including from history, so keys are
   never committed under any encoding.**
@@ -555,7 +565,7 @@ credentials — the same principle as any public Terraform or Ansible project.
   history, and **every SSH key including the operational account's own
   `authorized_keys`**; locks every human account; and purges `git`, `docker`,
   and `gh` entirely (the runtime cluster needs none of them). The export
-  **fails** rather than ships if an `authorized_keys` survives — a surviving key
+  **fails** rather than ships if an `authorized_keys` survives. A surviving key
   would hand every downloader a working login to every guest deployed from it.
   Access is supplied per guest at deploy time from a cloud-init seed instead;
   see *[First-boot identity](#first-boot-identity-how-a-credential-free-image-becomes-your-cluster)*.
@@ -563,7 +573,7 @@ credentials — the same principle as any public Terraform or Ansible project.
   never from the golden image or a deployed guest.
 - **The template box is never altered by a build.** Because that box is often
   also a working machine (with its own docker/git logins), `template` snapshots
-  it first and **rolls back** after export — so the box keeps its tooling,
+  it first and **rolls back** after export, so the box keeps its tooling,
   credentials, and accounts while the exported OVA is clean. The two never mix.
 
 The one credential `setup` itself needs is your **bootstrap** sudo access, used
@@ -574,8 +584,8 @@ once. `RemoteHost.sudo()` tries passwordless `sudo -n` first and falls back to
 
 `setup` disables the bootstrap account so the *deployed image* ships hardened.
 If the template VM is also used for other work and you want that account back on
-**the box itself**, `restore-bootstrap` reverses the disable there — unlock,
-restore shell and sudo, reinstate the key — without touching the already-exported
+**the box itself**, `restore-bootstrap` reverses the disable there (unlock,
+restore shell and sudo, reinstate the key) without touching the already-exported
 OVA or its clones, which stay hardened:
 
 ```powershell
@@ -643,7 +653,7 @@ Endpoints:
   (the root `/` redirects there). This renders the live manifest as a webpage.
 - **From a script:** `curl http://apjump:5090/api/inventory` for JSON.
 - **From off the network / over an untrusted link:** tunnel over SSH, then use
-  `localhost` — nothing is exposed publicly:
+  `localhost`, so nothing is exposed publicly:
   ```
   ssh -L 5090:localhost:5090 vmadmin@apjump
   # then browse http://localhost:5090/clusterview
@@ -656,14 +666,14 @@ Endpoints:
 
 Guests are provisioned **one at a time**. The image ships `/etc/machine-id`
 blanked so every clone generates its own, but netplan's default
-`dhcp-identifier` derives from that id — so booting clones concurrently, before
+`dhcp-identifier` derives from that id, so booting clones concurrently, before
 each has generated one, makes them contend for a single DHCP lease. Each guest
 is fully up before its successor starts:
 
 1. Destroy any existing VM of that name, import the OVA, size it, bridge it onto
    the same host interface the template used.
-2. **Build a cloud-init seed ISO for this guest and attach it** — hostname,
-   unique instance id, and your public key — *before the machine is started*.
+2. **Build a cloud-init seed ISO for this guest and attach it**: hostname,
+   unique instance id, and your public key, *before the machine is started*.
 3. Start headless, discover the **reachable LAN** address (the template carries
    a `docker0` bridge at 172.17.0.1 that is filtered out), wait for SSH.
 4. Wait for `cloud-init status --wait`, then verify the guest reports the
@@ -708,10 +718,10 @@ on Windows, `scoop install allure` or `choco install allure`).
 # 1. Run the suite, writing raw results
 python -m pytest --alluredir=allure-results          # or: scripts\e2e-test.ps1
 
-# 2a. Quick look — serve a temporary report and open it
+# 2a. Quick look: serve a temporary report and open it
 allure serve allure-results
 
-# 2b. Static report — generate a self-contained ./allure-report, then view it
+# 2b. Static report: generate a self-contained ./allure-report, then view it
 allure generate allure-results --clean -o allure-report
 allure open allure-report
 ```
@@ -780,7 +790,7 @@ All Python carries type hints and Google-style docstrings (`Args:`,
   powering off the template (4 GB) is what funds the three 1 GB guests, so the
   template is shut down during a run and `preflight` will FAIL a fresh deploy
   while the cluster is already up. On a host with ample RAM the template can
-  stay running and both can coexist — this is a resource constraint, not a
+  stay running and both can coexist. This is a resource constraint, not a
   requirement of the design. Run `vmdeploy preflight` to see where your host
   stands. Rebuilding the golden image while the cluster runs needs the template
   *and* the three clones resident at once, so tear the cluster down first if
@@ -798,7 +808,7 @@ All Python carries type hints and Google-style docstrings (`Args:`,
   whose line is literally `127.0.1.1 {{fqdn}} {{hostname}}`. The cluster uses
   single-label hostnames with no DNS domain, so both placeholders resolve to the
   same string. The only way to change it is to override that template inside the
-  golden image — and that file is **shipped by the `cloud-init` package**, so a
+  golden image, and that file is **shipped by the `cloud-init` package**, so a
   routine package or system update would overwrite it and silently destroy the
   customisation, leaving no error and no signal that anything changed. A
   duplicate alias is valid and resolution is unaffected; a modification that

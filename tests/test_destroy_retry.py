@@ -2,7 +2,7 @@
 
 A teardown once left a stray VM behind: ``unregistervm --delete`` was issued
 once, unchecked, and failed silently on a transient VirtualBox lock. These
-tests pin the fix — delete is retried and verified, and a VM that never
+tests pin the fix: delete is retried and verified, and a VM that never
 disappears raises rather than passing silently.
 """
 

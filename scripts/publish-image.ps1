@@ -1,5 +1,5 @@
 # Publish the golden OVA to a container registry as a public OCI artifact, so
-# anyone can pull and import it — no private sharing needed. Uses ORAS
+# anyone can pull and import it, with no private sharing needed. Uses ORAS
 # (https://oras.land).
 #
 # Log in first (a token, not your account password):

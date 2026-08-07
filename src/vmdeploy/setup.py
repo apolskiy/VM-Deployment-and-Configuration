@@ -195,8 +195,8 @@ def disable_bootstrap_account(host: RemoteHost, username: str) -> None:
 def _emit_toml(data: Mapping[str, Any]) -> str:
     """Serialise a shallow table-of-scalars mapping to TOML.
 
-    Handles exactly the shape the overlay uses — top-level tables whose values
-    are strings, integers, or booleans — so no third-party TOML writer is
+    Handles exactly the shape the overlay uses, top-level tables whose values
+    are strings, integers, or booleans, so no third-party TOML writer is
     needed. Top-level scalars are emitted before any table, as TOML requires.
 
     Args:
@@ -263,8 +263,8 @@ def sanitize_image(host: RemoteHost, operational_user: str) -> None:
     A golden image is a distributable artefact, so it must carry no credentials
     at all and none of the build-host tooling that tends to cache them. This
     removes cached Docker/registry and git/gh credentials, shell history, and
-    every SSH key — **including the operational account's own
-    ``authorized_keys``** — from every account; locks every human account except
+    every SSH key, **including the operational account's own
+    ``authorized_keys``**, from every account; locks every human account except
     the operational user; and purges git, docker, and gh.
 
     The exported image therefore has no login whatsoever. That is the point: it
@@ -275,7 +275,7 @@ def sanitize_image(host: RemoteHost, operational_user: str) -> None:
     exists.
 
     This is destructive and is intended to run only inside the snapshot-protected
-    image build, which rolls the template box back afterward — so the working box
+    image build, which rolls the template box back afterward, so the working box
     keeps its keys, credentials, and accounts.
 
     Args:
@@ -493,7 +493,7 @@ def enable_account(host: RemoteHost, username: str, public_key: str) -> None:
     password, restores an interactive shell, re-adds the account to the sudo
     group with a passwordless rule, and reinstates the supplied public key. Use
     it to bring the bootstrap account back on the *template box* after the
-    hardened image has been exported — the exported OVA and its clones are
+    hardened image has been exported. The exported OVA and its clones are
     unaffected and stay hardened.
 
     Args:
@@ -601,7 +601,7 @@ def write_local_overlay(base_config_path: Path, username: str, key_path: Path) -
     existing["ssh"] = ssh_table
 
     header = (
-        "# Local, machine-specific overrides. GITIGNORED — never committed.\n"
+        "# Local, machine-specific overrides. GITIGNORED, never committed.\n"
         "# [ssh] was written by `vmdeploy setup`; other sections are preserved.\n\n"
     )
     try:

@@ -1,6 +1,6 @@
 """Build a NoCloud seed ISO so a guest configures itself on first boot.
 
-The golden image deliberately ships with **no credentials at all** — image
+The golden image deliberately ships with **no credentials at all**, because image
 sanitisation locks every account, so nothing in the appliance can be logged
 into. Identity is supplied per guest at import time instead, by attaching a
 small ISO that cloud-init reads on first boot (its NoCloud datasource).
