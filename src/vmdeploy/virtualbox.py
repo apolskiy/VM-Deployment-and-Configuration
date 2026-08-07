@@ -431,6 +431,69 @@ class VBoxManage:
             f"{vm_name} could not be deleted after {attempts} attempts; last error: {last_error}",
         )
 
+    def has_snapshot(self, vm_name: str, snapshot: str) -> bool:
+        """Report whether a named snapshot exists for a machine.
+
+        Args:
+            vm_name: The machine to inspect.
+            snapshot: The snapshot name.
+
+        Returns:
+            True if a snapshot with that name exists.
+        """
+        result = self.run("snapshot", vm_name, "list", "--machinereadable", check=False)
+        if not result.ok:
+            return False
+        return f'="{snapshot}"' in result.stdout
+
+    def take_snapshot(self, vm_name: str, snapshot: str) -> None:
+        """Take a snapshot of a machine, replacing any existing one by that name.
+
+        Used to protect the template box before it is mutated for image baking,
+        so its exact prior state can be restored afterward.
+
+        Args:
+            vm_name: The machine to snapshot.
+            snapshot: The snapshot name.
+
+        Raises:
+            VirtualBoxError: If the snapshot cannot be taken.
+        """
+        if self.has_snapshot(vm_name, snapshot):
+            self.delete_snapshot(vm_name, snapshot)
+        _LOG.info("Taking snapshot '%s' of %s", snapshot, vm_name)
+        self.run("snapshot", vm_name, "take", snapshot, timeout=300)
+
+    def restore_snapshot(self, vm_name: str, snapshot: str) -> None:
+        """Restore a machine to a named snapshot.
+
+        The machine must be powered off. This reverts every change made since the
+        snapshot, returning the working box to its pre-bake state.
+
+        Args:
+            vm_name: The machine to restore.
+            snapshot: The snapshot name.
+
+        Raises:
+            VirtualBoxError: If the machine is running or the restore fails.
+        """
+        if self.state(vm_name) is VMState.RUNNING:
+            raise VirtualBoxError(
+                ("snapshot", vm_name, "restore"), -1, "machine must be powered off to restore"
+            )
+        _LOG.info("Restoring %s to snapshot '%s'", vm_name, snapshot)
+        self.run("snapshot", vm_name, "restore", snapshot, timeout=300)
+
+    def delete_snapshot(self, vm_name: str, snapshot: str) -> None:
+        """Delete a named snapshot, tolerating its absence.
+
+        Args:
+            vm_name: The machine whose snapshot to delete.
+            snapshot: The snapshot name.
+        """
+        _LOG.debug("Deleting snapshot '%s' of %s", snapshot, vm_name)
+        self.run("snapshot", vm_name, "delete", snapshot, check=False, timeout=300)
+
     def guest_property(self, vm_name: str, key: str) -> str:
         """Read a guest property published by the Guest Additions.
 

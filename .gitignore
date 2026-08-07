@@ -246,6 +246,10 @@ site-content/
 
 # Encrypted inventory manifest (canonical local record).
 *.enc
+# ...except the cross-language interop fixture, which is sealed with the literal
+# test key 0x00..0x1F (see goservice/interop_test.go) and carries no secret. It
+# must be committed or the Go interop test cannot run in CI.
+!goservice/testdata/*.enc
 
 # Docker compose seeded data (generated at runtime).
 .compose-data/

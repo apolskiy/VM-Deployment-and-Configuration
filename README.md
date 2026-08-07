@@ -387,6 +387,19 @@ credentials — the same principle as any public Terraform or Ansible project.
   `VMDEPLOY_SUDO_PASSWORD`, a key written to a runner-local path). Secrets are
   never downloadable as repository files. (The E2E tier still needs a host that
   can run VirtualBox; see *Known limitations*.)
+- **The golden image ships no credentials or build tooling.** A distributable
+  image must not carry the push credentials that build hosts accumulate.
+  `template` therefore **sanitises the image before export**: it removes cached
+  Docker/registry, git, and `gh` credentials, shell history, and stray private
+  keys from every account (the operational user's `authorized_keys` is kept);
+  locks every human account except the operational user; and purges `git`,
+  `docker`, and `gh` entirely (the runtime cluster needs none of them). Build
+  and push container/VM images from **CI or a dedicated build host**, never from
+  the golden image or a deployed guest.
+- **The template box is never altered by a build.** Because that box is often
+  also a working machine (with its own docker/git logins), `template` snapshots
+  it first and **rolls back** after export — so the box keeps its tooling,
+  credentials, and accounts while the exported OVA is clean. The two never mix.
 
 The one credential `setup` itself needs is your **bootstrap** sudo access, used
 once. `RemoteHost.sudo()` tries passwordless `sudo -n` first and falls back to

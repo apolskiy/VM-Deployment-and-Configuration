@@ -27,6 +27,7 @@ from typing import Final
 from vmdeploy.config import ClusterConfig, HostConfig
 from vmdeploy.exceptions import ProvisioningTimeoutError, VmDeployError
 from vmdeploy.inventory_service import prepare_template
+from vmdeploy.setup import sanitize_image
 from vmdeploy.ssh_client import RemoteHost, wait_for_ssh
 from vmdeploy.virtualbox import VBoxManage, VMState
 
@@ -62,13 +63,18 @@ def export_golden_template(vbox: VBoxManage, config: ClusterConfig) -> None:
     vbox.export_appliance(template, config.virtualbox.template_ova)
 
 
-def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: Path) -> None:
-    """Bake dependencies into the template VM, then export it as the golden OVA.
+_PREBAKE_SNAPSHOT: Final[str] = "vmdeploy-prebake"
 
-    The template is started so its dependencies can be installed over SSH
-    (pinned Go, Apache, and a precompiled inventory binary), then powered off and
-    exported. Clones of the resulting image need no package installs at deploy
-    time, which is what makes deploys fast and reproducible.
+
+def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: Path) -> None:
+    """Bake dependencies into the template, sanitise it, and export a clean OVA.
+
+    The template box is snapshotted first, so every mutation the build makes —
+    installing dependencies, and then stripping credentials and build tooling
+    from the image — is rolled back afterward. The exported OVA is a clean,
+    distributable runtime artefact (no cached registry or git credentials, no
+    git/docker/gh), while the template box is returned to exactly its prior
+    state, credentials and all, for continued use.
 
     Args:
         vbox: The hypervisor wrapper.
@@ -76,7 +82,7 @@ def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: P
         source_dir: Local directory holding the Go service sources.
 
     Raises:
-        VmDeployError: If the template is not registered or baking fails.
+        VmDeployError: If the template is not registered or the build fails.
         ProvisioningTimeoutError: If the template never becomes reachable.
     """
     template = config.virtualbox.template_vm
@@ -86,17 +92,32 @@ def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: P
             f"registered machines: {list(vbox.list_vms())}"
         )
 
-    _LOG.info("Building golden template %s (bake dependencies, then export)", template)
-    vbox.start_headless(template)
-    address = vbox.wait_for_guest_ip(template, template, config.virtualbox.boot_timeout_seconds)
-    wait_for_ssh(address, config.ssh, config.virtualbox.boot_timeout_seconds)
-
-    with RemoteHost(address, config.ssh) as host:
-        prepare_template(host, config, source_dir)
-
+    _LOG.info("Building golden template %s (snapshot, bake, sanitise, export, roll back)", template)
     vbox.power_off(template)
-    vbox.export_appliance(template, config.virtualbox.template_ova)
-    _LOG.info("Golden template exported to %s", config.virtualbox.template_ova)
+    vbox.take_snapshot(template, _PREBAKE_SNAPSHOT)
+
+    try:
+        vbox.start_headless(template)
+        address = vbox.wait_for_guest_ip(
+            template, template, config.virtualbox.boot_timeout_seconds
+        )
+        wait_for_ssh(address, config.ssh, config.virtualbox.boot_timeout_seconds)
+
+        with RemoteHost(address, config.ssh) as host:
+            prepare_template(host, config, source_dir)
+            # Strip credentials and build tooling last, so nothing the bake
+            # pulled in (e.g. apt caches, tooling) survives into the image.
+            sanitize_image(host, config.ssh.user)
+
+        vbox.power_off(template)
+        vbox.export_appliance(template, config.virtualbox.template_ova)
+        _LOG.info("Golden template exported to %s", config.virtualbox.template_ova)
+    finally:
+        # Always return the working box to its pre-build state, even on failure.
+        vbox.power_off(template)
+        vbox.restore_snapshot(template, _PREBAKE_SNAPSHOT)
+        vbox.delete_snapshot(template, _PREBAKE_SNAPSHOT)
+        _LOG.info("Template box %s rolled back to its pre-build state", template)
 
 
 def provision_host(vbox: VBoxManage, config: ClusterConfig, host: HostConfig) -> str:

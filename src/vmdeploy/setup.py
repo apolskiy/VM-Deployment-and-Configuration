@@ -41,6 +41,21 @@ _LOG: Final[logging.Logger] = logging.getLogger(__name__)
 DEFAULT_ADMIN_USER: Final[str] = "vmadmin"
 
 
+def _shell_quote(value: str) -> str:
+    """Quote a string as a single POSIX shell word.
+
+    The stdlib ``shlex.quote`` targets the local platform (Windows here) while
+    the remote shell is always POSIX, so quoting is done explicitly.
+
+    Args:
+        value: The string to quote.
+
+    Returns:
+        The value wrapped in single quotes with embedded quotes escaped.
+    """
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def generate_ssh_keypair(private_path: Path, comment: str) -> str:
     """Generate an unencrypted Ed25519 OpenSSH keypair on the local host.
 
@@ -206,6 +221,103 @@ def _emit_toml(data: Mapping[str, Any]) -> str:
         lines.extend(f"{key} = {render(val)}" for key, val in values.items())
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+_BUILD_TOOLING_PACKAGES: Final[tuple[str, ...]] = (
+    "git",
+    "gh",
+    "docker.io",
+    "docker-ce",
+    "docker-ce-cli",
+    "containerd",
+    "containerd.io",
+    "runc",
+)
+
+# Per-home credential and history artefacts a distributable image must not carry.
+# authorized_keys is deliberately excluded: that is the operational access the
+# cluster depends on, not a leaked secret.
+_CREDENTIAL_GLOBS: Final[tuple[str, ...]] = (
+    ".docker",
+    ".git-credentials",
+    ".gitconfig",
+    ".config/gh",
+    ".config/git",
+    ".netrc",
+    ".aws",
+    ".bash_history",
+    ".ssh/id_*",
+    ".ssh/known_hosts",
+)
+
+
+def sanitize_image(host: RemoteHost, operational_user: str) -> None:
+    """Strip credentials and build tooling from the image before it is exported.
+
+    A golden image is a distributable artefact, so it must carry no push
+    credentials and none of the build-host tooling that tends to cache them.
+    This removes cached Docker/registry and git/gh credentials, shell history,
+    and stray private keys from every account; locks every human account except
+    the operational user; and purges git, docker, and gh. The operational user's
+    ``authorized_keys`` is preserved — that is how the cluster is reached.
+
+    This is destructive and is intended to run only inside the snapshot-protected
+    image build, which rolls the template box back afterward.
+
+    Args:
+        host: A connected SSH session with sudo (as the operational user).
+        operational_user: The account that must retain access in the image.
+
+    Raises:
+        VmDeployError: If sanitisation cannot be completed.
+    """
+    _LOG.info("Sanitising image on %s (removing credentials and build tooling)", host.address)
+
+    # 1. Purge cached credentials and history from every home and from root.
+    targets = " ".join(f'"$home"/{pattern}' for pattern in _CREDENTIAL_GLOBS)
+    purge = (
+        'for home in /root /home/*; do '
+        '[ -d "$home" ] || continue; '
+        f"rm -rf {targets}; "
+        "done"
+    )
+    host.sudo(f"sh -c {_shell_quote(purge)}", check=False)
+
+    # 2. Lock every non-system human account except the operational user, so the
+    #    image ships with only the intended login. Snapshot rollback restores the
+    #    disabled accounts on the working box.
+    lock = (
+        "getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1}' | "
+        f"while read -r account; do "
+        f'  [ "$account" = "{operational_user}" ] && continue; '
+        '  usermod -L "$account" 2>/dev/null || true; '
+        '  usermod -s /usr/sbin/nologin "$account" 2>/dev/null || true; '
+        '  gpasswd -d "$account" sudo 2>/dev/null || true; '
+        '  rm -f "/etc/sudoers.d/90-$account"; '
+        '  rm -f "/home/$account/.ssh/authorized_keys"; '
+        "done"
+    )
+    host.sudo(f"sh -c {_shell_quote(lock)}", check=False)
+
+    # 3. Purge build tooling and its data. The runtime cluster needs none of it.
+    packages = " ".join(_BUILD_TOOLING_PACKAGES)
+    host.sudo(
+        f"DEBIAN_FRONTEND=noninteractive apt-get purge -y {packages} 2>/dev/null || true",
+        check=False,
+    )
+    host.sudo("DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || true",
+              check=False)
+    host.sudo("rm -rf /var/lib/docker /etc/docker /var/lib/containerd", check=False)
+    host.sudo("groupdel docker 2>/dev/null || true", check=False)
+    host.sudo("apt-get clean", check=False)
+
+    # 4. Verify the build tooling is actually gone.
+    leftover = host.run(
+        "command -v git docker gh 2>/dev/null || true", check=False
+    ).stdout.strip()
+    if leftover:
+        _LOG.warning("Build tooling still present after purge on %s: %s", host.address, leftover)
+    _LOG.info("Image sanitised on %s", host.address)
 
 
 def enable_account(host: RemoteHost, username: str, public_key: str) -> None:
