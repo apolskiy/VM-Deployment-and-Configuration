@@ -20,20 +20,18 @@ at a time so a clone is always made unique before its successor is started.
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 from typing import Final
 
 from vmdeploy.config import ClusterConfig, HostConfig
 from vmdeploy.exceptions import ProvisioningTimeoutError, VmDeployError
 from vmdeploy.inventory_service import prepare_template
-from vmdeploy.setup import sanitize_image
+from vmdeploy.seed import build_seed_iso
+from vmdeploy.setup import arm_cloud_init, sanitize_image
 from vmdeploy.ssh_client import RemoteHost, wait_for_ssh
 from vmdeploy.virtualbox import VBoxManage, VMState
 
 _LOG: Final[logging.Logger] = logging.getLogger(__name__)
-
-_REBOOT_SETTLE_SECONDS: Final[int] = 15
 
 
 def export_golden_template(vbox: VBoxManage, config: ClusterConfig) -> None:
@@ -108,6 +106,10 @@ def build_golden_template(vbox: VBoxManage, config: ClusterConfig, source_dir: P
             # Strip credentials and build tooling last, so nothing the bake
             # pulled in (e.g. apt caches, tooling) survives into the image.
             sanitize_image(host, config.ssh.user)
+            # Arm cloud-init after sanitising, so its clean also discards the
+            # logs the bake and the sanitise pass just wrote. Clones then take
+            # their identity from the seed attached at import.
+            arm_cloud_init(host)
 
         vbox.power_off(template)
         vbox.export_appliance(template, config.virtualbox.template_ova)
@@ -155,92 +157,97 @@ def provision_host(vbox: VBoxManage, config: ClusterConfig, host: HostConfig) ->
             host.vm_name,
         )
 
+    # The guest takes its identity from a seed read on first boot, so it is
+    # built and inserted before the machine is ever started. Nothing is
+    # configured over SSH afterwards, and no reboot is needed to apply it.
+    seed_path = _seed_directory(config) / f"{host.vm_name}-seed.iso"
+    build_seed_iso(seed_path, host.hostname, config.ssh.user, _deployer_public_key(config))
+    vbox.attach_optical(host.vm_name, seed_path)
+
     vbox.start_headless(host.vm_name)
 
-    # The clone still carries the template's hostname, so DNS cannot identify
-    # it yet. Guest Additions report the lease directly, which is why the
-    # additions are a prerequisite documented in the README.
     address = vbox.wait_for_guest_ip(
-        host.vm_name, config.virtualbox.template_vm, config.virtualbox.boot_timeout_seconds
+        host.vm_name, host.hostname, config.virtualbox.boot_timeout_seconds
     )
     wait_for_ssh(address, config.ssh, config.virtualbox.boot_timeout_seconds)
 
-    _individualise(address, config, host)
-
-    final_address = vbox.wait_for_guest_ip(
-        host.vm_name, host.hostname, config.virtualbox.boot_timeout_seconds
-    )
-    wait_for_ssh(final_address, config.ssh, config.virtualbox.boot_timeout_seconds)
-
-    with RemoteHost(final_address, config.ssh) as guest:
+    with RemoteHost(address, config.ssh) as guest:
+        _wait_for_cloud_init(guest, config.virtualbox.boot_timeout_seconds)
         actual = guest.hostname()
         if actual != host.hostname:
             raise VmDeployError(
                 f"{host.vm_name} reports hostname '{actual}' after provisioning, "
-                f"expected '{host.hostname}'"
+                f"expected '{host.hostname}'. The cloud-init seed was not applied."
             )
 
-    _LOG.info("%s provisioned at %s", host.hostname, final_address)
-    return final_address
+    _LOG.info("%s provisioned at %s", host.hostname, address)
+    return address
 
 
-def _individualise(address: str, config: ClusterConfig, host: HostConfig) -> None:
-    """Give a freshly cloned guest a unique identity, then reboot it.
+def _seed_directory(config: ClusterConfig) -> Path:
+    """Return the directory holding per-guest seed images.
+
+    The seeds sit beside the golden image they pair with. They stay on disk for
+    the life of the guest: cloud-init re-reads the datasource on every boot, and
+    an absent one would look like a new instance and re-run configuration. They
+    hold nothing secret — a hostname and a public key.
 
     Args:
-        address: The guest's current IPv4 address.
         config: The cluster configuration.
-        host: The host definition being provisioned.
+
+    Returns:
+        The directory seeds are written to.
+    """
+    return config.virtualbox.template_ova.parent / "seeds"
+
+
+def _deployer_public_key(config: ClusterConfig) -> str:
+    """Read the public key that will be authorised on every guest.
+
+    Args:
+        config: The cluster configuration, providing the private key path.
+
+    Returns:
+        The OpenSSH public key line.
 
     Raises:
-        VmDeployError: If identity commands fail.
+        VmDeployError: If the public key is missing or unreadable.
     """
-    _LOG.info("Individualising %s as %s", address, host.hostname)
-    with RemoteHost(address, config.ssh) as guest:
-        # A fresh machine ID must exist before the next DHCP request, otherwise
-        # this clone and its siblings contend for one lease.
-        guest.sudo("rm -f /etc/machine-id /var/lib/dbus/machine-id")
-        guest.sudo("systemd-machine-id-setup")
-        guest.sudo("sh -c 'cp /etc/machine-id /var/lib/dbus/machine-id'", check=False)
-
-        guest.sudo("rm -f /etc/ssh/ssh_host_*")
-        guest.sudo("dpkg-reconfigure -f noninteractive openssh-server", check=False)
-        guest.sudo("ssh-keygen -A", check=False)
-
-        guest.sudo(f"hostnamectl set-hostname {host.hostname}")
-        _rewrite_hosts_file(guest, host.hostname)
-
-        _LOG.info("Rebooting %s to apply its new identity", host.hostname)
-        guest.sudo("systemd-run --on-active=2 --timer-property=AccuracySec=100ms systemctl reboot",
-                   check=False)
-
-    # The guest tears down its SSH listener during shutdown; probing before it
-    # does would reconnect to the still-live pre-reboot session and report
-    # success against the old identity.
-    time.sleep(_REBOOT_SETTLE_SECONDS)
+    private_path = config.ssh.key_path
+    public_path = private_path.with_suffix(private_path.suffix + ".pub")
+    try:
+        return public_path.read_text(encoding="ascii").strip()
+    except OSError as error:
+        raise VmDeployError(
+            f"Cannot read the deployer public key at {public_path}: {error}. "
+            "Guests take their only login from this key; run 'vmdeploy setup' to generate one."
+        ) from error
 
 
-def _rewrite_hosts_file(guest: RemoteHost, hostname: str) -> None:
-    """Point the 127.0.1.1 entry in /etc/hosts at the new hostname.
+def _wait_for_cloud_init(guest: RemoteHost, timeout_seconds: int) -> None:
+    """Block until the guest has finished applying its seed.
 
-    Debian-family systems map the hostname to 127.0.1.1. Leaving the template's
-    name there makes ``sudo`` emit resolution warnings and breaks any service
-    that resolves its own hostname at start-up.
+    SSH answering only means sshd is up; cloud-init may still be creating the
+    account and setting the hostname. Checking here turns a race into a clear
+    failure, and surfaces the guest's own diagnosis when it did not finish.
 
     Args:
         guest: A connected SSH session to the guest.
-        hostname: The guest's new hostname.
+        timeout_seconds: How long to wait for completion.
 
     Raises:
-        VmDeployError: If the hosts file cannot be rewritten.
+        VmDeployError: If cloud-init did not finish successfully.
     """
-    guest.sudo(
-        "sh -c "
-        f"\"grep -q '^127.0.1.1' /etc/hosts "
-        f"&& sed -i 's/^127.0.1.1.*/127.0.1.1\\t{hostname}/' /etc/hosts "
-        f"|| printf '127.0.1.1\\t{hostname}\\n' >> /etc/hosts\"",
-        check=False,
+    result = guest.run(
+        "cloud-init status --wait --long || true", check=False, timeout=timeout_seconds
     )
+    report = result.stdout.strip()
+    if "status: done" not in report:
+        raise VmDeployError(
+            f"cloud-init did not finish on {guest.address}; it reported:\n{report}\n"
+            "The guest booted but may not have applied its seed."
+        )
+    _LOG.debug("cloud-init finished on %s", guest.address)
 
 
 def provision_cluster(vbox: VBoxManage, config: ClusterConfig) -> dict[str, str]:

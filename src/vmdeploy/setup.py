@@ -248,25 +248,39 @@ _CREDENTIAL_GLOBS: Final[tuple[str, ...]] = (
     ".bash_history",
     ".ssh/id_*",
     ".ssh/known_hosts",
+    # Including authorized_keys is what makes the image publishable: it leaves
+    # no account anyone can log in to, not even the builder's. Each guest is
+    # given its own key at first boot from the seed ISO built by vmdeploy.seed,
+    # and cloud-init installs it onto this account even though the account
+    # already exists in the image.
+    ".ssh/authorized_keys",
 )
 
 
 def sanitize_image(host: RemoteHost, operational_user: str) -> None:
     """Strip credentials and build tooling from the image before it is exported.
 
-    A golden image is a distributable artefact, so it must carry no push
-    credentials and none of the build-host tooling that tends to cache them.
-    This removes cached Docker/registry and git/gh credentials, shell history,
-    and stray private keys from every account; locks every human account except
-    the operational user; and purges git, docker, and gh. The operational user's
-    ``authorized_keys`` is preserved — that is how the cluster is reached.
+    A golden image is a distributable artefact, so it must carry no credentials
+    at all and none of the build-host tooling that tends to cache them. This
+    removes cached Docker/registry and git/gh credentials, shell history, and
+    every SSH key — **including the operational account's own
+    ``authorized_keys``** — from every account; locks every human account except
+    the operational user; and purges git, docker, and gh.
+
+    The exported image therefore has no login whatsoever. That is the point: it
+    can be published without handing anyone access, because each guest receives
+    its own key at first boot from a cloud-init seed (see :mod:`vmdeploy.seed`
+    and :func:`arm_cloud_init`). The operational account is left in place, and
+    cloud-init installs the deployer's key onto it even though it already
+    exists.
 
     This is destructive and is intended to run only inside the snapshot-protected
-    image build, which rolls the template box back afterward.
+    image build, which rolls the template box back afterward — so the working box
+    keeps its keys, credentials, and accounts.
 
     Args:
         host: A connected SSH session with sudo (as the operational user).
-        operational_user: The account that must retain access in the image.
+        operational_user: The account left in place for cloud-init to key.
 
     Raises:
         VmDeployError: If sanitisation cannot be completed.
@@ -317,7 +331,159 @@ def sanitize_image(host: RemoteHost, operational_user: str) -> None:
     ).stdout.strip()
     if leftover:
         _LOG.warning("Build tooling still present after purge on %s: %s", host.address, leftover)
-    _LOG.info("Image sanitised on %s", host.address)
+
+    _verify_no_authorized_keys(host)
+    _LOG.info("Image sanitised on %s; it now carries no login of any kind", host.address)
+
+
+def _verify_no_authorized_keys(host: RemoteHost) -> None:
+    """Confirm no account in the image can still be logged in to.
+
+    This is the check that makes publishing safe, so it fails the build rather
+    than warning: a surviving ``authorized_keys`` would hand every downloader of
+    the image a working login to every guest deployed from it.
+
+    Args:
+        host: A connected SSH session with sudo.
+
+    Raises:
+        VmDeployError: If any authorized_keys file survived.
+    """
+    survivors = host.sudo(
+        "find /root /home -name authorized_keys 2>/dev/null || true", check=False
+    ).stdout.split()
+    if survivors:
+        raise VmDeployError(
+            f"authorized_keys survived sanitisation at {survivors}; the image would ship a "
+            "working login and must not be published. Sanitisation did not complete."
+        )
+
+
+# Ubuntu's live installer switches cloud-init off after the first boot and
+# records the opt-out in these two files. Both must go for a guest to configure
+# itself from a seed, and the second matters more than it looks: it pins
+# ``datasource_list`` to ``[None]``, so a guest with a perfectly good cidata ISO
+# attached would never even probe for it and would boot with no identity at all.
+_CLOUD_INIT_DISABLED_FLAG: Final[str] = "/etc/cloud/cloud-init.disabled"
+_INSTALLER_DROPIN: Final[str] = "/etc/cloud/cloud.cfg.d/99-installer.cfg"
+
+# Sorts after 99-installer.cfg, so NoCloud wins even if that file is ever
+# reintroduced by a package update.
+_DATASOURCE_DROPIN: Final[str] = "/etc/cloud/cloud.cfg.d/99-vmdeploy-nocloud.cfg"
+_DATASOURCE_DROPIN_BODY: Final[str] = (
+    "# Written by vmdeploy when baking the golden image.\n"
+    "# The appliance ships with no credentials; each guest receives its identity\n"
+    "# from a NoCloud seed ISO attached at import. Probing NoCloud first is what\n"
+    "# makes that work; None remains as the fallback for a guest booted without\n"
+    "# a seed, so it comes up rather than hanging.\n"
+    "datasource_list: [ NoCloud, None ]\n"
+)
+
+# The image ships with cloud-init networking disabled by the Ubuntu installer,
+# but that drop-in is removed by ``cloud-init clean`` (which runs the hooks in
+# /etc/cloud/clean.d). Relying on it would leave cloud-init free to rewrite a
+# working netplan on first boot, so the setting is restored here under a name
+# clean does not touch.
+_NETWORK_DROPIN: Final[str] = "/etc/cloud/cloud.cfg.d/99-vmdeploy-network.cfg"
+_NETWORK_DROPIN_BODY: Final[str] = (
+    "# Written by vmdeploy when baking the golden image.\n"
+    "# The image already carries working netplan/DHCP configuration. cloud-init\n"
+    "# must not generate its own alongside it, so its network handling is off.\n"
+    "network: {config: disabled}\n"
+)
+
+
+def arm_cloud_init(host: RemoteHost) -> None:
+    """Re-enable cloud-init in the image so each clone configures itself on boot.
+
+    The golden image carries no credentials, so a guest cloned from it has no
+    way in until something injects one. That something is a NoCloud seed ISO
+    attached at import (see :mod:`vmdeploy.seed`), and this prepares the image
+    to read it: it removes the installer's opt-out, removes the installer
+    drop-in pinning the datasource to ``None``, pins ``NoCloud`` explicitly, and
+    clears the recorded instance so the next boot is treated as a first boot.
+
+    Network configuration is deliberately left alone: the image already ships
+    ``00-subiquity-disable-cloudinit-networking.cfg``, so cloud-init will not
+    rewrite the working netplan.
+
+    This is intended to run inside the snapshot-protected image build, which
+    rolls the template box back afterward.
+
+    Args:
+        host: A connected SSH session with sudo.
+
+    Raises:
+        VmDeployError: If the image cannot be armed, verified after the fact.
+    """
+    _LOG.info("Arming cloud-init for first-boot self-configuration on %s", host.address)
+
+    host.sudo(f"rm -f {_CLOUD_INIT_DISABLED_FLAG} {_INSTALLER_DROPIN}")
+
+    # Forget this boot's instance, logs, and machine id, so every clone treats
+    # its first boot as a first boot and applies its own seed. Without this the
+    # image carries a recorded instance and clones skip per-instance modules.
+    #
+    # This runs *before* the drop-ins are written, not after: clean executes the
+    # hooks in /etc/cloud/clean.d, which delete the installer's drop-ins. Writing
+    # ours first would mean cleaning them away again.
+    host.sudo("cloud-init clean --logs --machine-id", check=False)
+
+    for remote_path, body in (
+        (_DATASOURCE_DROPIN, _DATASOURCE_DROPIN_BODY),
+        (_NETWORK_DROPIN, _NETWORK_DROPIN_BODY),
+    ):
+        staged = f"/tmp/{Path(remote_path).name}"
+        host.put_bytes(body.encode("utf-8"), staged)
+        host.sudo(f"install -m 0644 -o root -g root {staged} {remote_path}")
+        host.run(f"rm -f {staged}", check=False)
+
+    _verify_cloud_init_armed(host)
+    _LOG.info("cloud-init armed on %s; clones will self-configure from a seed", host.address)
+
+
+def _verify_cloud_init_armed(host: RemoteHost) -> None:
+    """Confirm the image will actually read a seed before it is exported.
+
+    A silent failure here produces an appliance that boots normally and is
+    unreachable, with nothing in the image to explain why, so it is checked
+    while a session is still open rather than discovered against a headless VM.
+
+    Args:
+        host: A connected SSH session with sudo.
+
+    Raises:
+        VmDeployError: If an installer opt-out survived or NoCloud is not
+            selectable.
+    """
+    leftovers = host.run(
+        f"test -e {_CLOUD_INIT_DISABLED_FLAG} && echo {_CLOUD_INIT_DISABLED_FLAG}; "
+        f"test -e {_INSTALLER_DROPIN} && echo {_INSTALLER_DROPIN}; true",
+        check=False,
+    ).stdout.strip()
+    if leftovers:
+        raise VmDeployError(
+            "cloud-init is still disabled in the image; these installer opt-outs survived: "
+            f"{leftovers.split()}. Clones would boot with no identity and no way in."
+        )
+
+    # Every privileged read here ends in "|| true". RemoteHost.sudo cannot tell a
+    # command that legitimately exits non-zero from sudo itself being refused, so
+    # a missing file would surface as a confusing password error instead of the
+    # diagnosis below.
+    datasource = host.sudo(f"cat {_DATASOURCE_DROPIN} 2>/dev/null || true", check=False).stdout
+    if "NoCloud" not in datasource:
+        raise VmDeployError(
+            f"the NoCloud datasource drop-in at {_DATASOURCE_DROPIN} is missing or unreadable; "
+            "clones would not probe for their seed ISO and would boot with no identity."
+        )
+
+    network = host.sudo(f"cat {_NETWORK_DROPIN} 2>/dev/null || true", check=False).stdout
+    if "disabled" not in network:
+        raise VmDeployError(
+            f"the network drop-in at {_NETWORK_DROPIN} is missing or unreadable; cloud-init "
+            "would regenerate netplan on first boot and could break guest networking."
+        )
 
 
 def enable_account(host: RemoteHost, username: str, public_key: str) -> None:
@@ -444,6 +610,44 @@ def write_local_overlay(base_config_path: Path, username: str, key_path: Path) -
         raise VmDeployError(f"Cannot write local overlay {overlay}: {exc}") from exc
     _LOG.info("Updated local overlay %s (user '%s')", overlay, username)
     return overlay
+
+
+def run_keys_only_setup(
+    config: ClusterConfig,
+    base_config_path: Path,
+    *,
+    new_user: str,
+    new_key_path: Path,
+) -> None:
+    """Generate local credentials only, without touching any template machine.
+
+    This is the setup path for someone who **pulls** the published golden image
+    rather than baking their own. They have no template VM to harden, but they
+    still need the two pieces of local key material the cluster is built from:
+    the SSH keypair whose public half is written into every guest's cloud-init
+    seed, and the AES key the inventory service is sealed with.
+
+    Nothing is contacted over the network, so this works before any VM exists.
+
+    Args:
+        config: The loaded configuration, providing the inventory key location.
+        base_config_path: Path to the committed base configuration.
+        new_user: The operational account guests will be given.
+        new_key_path: Local path for the generated private key.
+
+    Raises:
+        VmDeployError: If the key material cannot be written.
+    """
+    generate_ssh_keypair(new_key_path, comment=f"{new_user}@vmdeploy")
+    load_or_create_key(config.inventory.key_file)
+    write_local_overlay(base_config_path, new_user, new_key_path)
+    _LOG.info(
+        "Keys ready: '%s' with key %s. No template was touched. Guests built from the "
+        "published image will accept this key and no other. Next: pull the image "
+        "(scripts/pull-image.ps1), then 'vmdeploy provision'.",
+        new_user,
+        new_key_path,
+    )
 
 
 def run_setup(

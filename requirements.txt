@@ -2,6 +2,9 @@
 paramiko>=4.0.0
 cryptography>=46.0.0
 requests>=2.32.0
+# Builds the cloud-init NoCloud seed ISO. Pure Python, so it needs no ISO
+# tooling on the host (Windows ships none).
+pycdlib>=1.14.0
 
 # Test and reporting stack.
 pytest>=9.0.0

@@ -355,6 +355,100 @@ class VBoxManage:
             bridge_interface,
         )
 
+    def optical_slot(self, vm_name: str) -> tuple[str, int, int]:
+        """Locate the machine's optical drive slot.
+
+        The slot is discovered rather than assumed, because the controller
+        layout comes from whatever appliance was imported. A slot already
+        holding an optical medium is preferred; otherwise a free slot on an IDE
+        controller is used. A slot holding a hard disk is never selected, since
+        attaching over it would detach the guest's root filesystem.
+
+        Args:
+            vm_name: The machine to inspect.
+
+        Returns:
+            The controller name, port, and device number of the optical slot.
+
+        Raises:
+            VirtualBoxError: If the machine exposes no usable optical slot.
+        """
+        info = self.run("showvminfo", vm_name, "--machinereadable", check=False)
+        controllers = re.findall(r'^storagecontrollername\d+="(.*)"$', info.stdout, re.MULTILINE)
+
+        free_slot: tuple[str, int, int] | None = None
+        for name in controllers:
+            pattern = rf'^"{re.escape(name)}-(\d+)-(\d+)"="(.*)"$'
+            for port, device, medium in re.findall(pattern, info.stdout, re.MULTILINE):
+                if medium == "emptydrive" or medium.lower().endswith(".iso"):
+                    return name, int(port), int(device)
+                if medium == "none" and free_slot is None and "ide" in name.lower():
+                    free_slot = (name, int(port), int(device))
+
+        if free_slot is not None:
+            return free_slot
+        raise VirtualBoxError(
+            ("showvminfo", vm_name),
+            -1,
+            f"{vm_name} exposes no optical drive slot to attach a cloud-init seed to; "
+            f"storage controllers found: {controllers}",
+        )
+
+    def attach_optical(self, vm_name: str, iso_path: Path) -> None:
+        """Attach an ISO to the machine's optical drive.
+
+        Args:
+            vm_name: The machine to attach to.
+            iso_path: The ISO image to insert.
+
+        Raises:
+            VirtualBoxError: If the medium cannot be attached.
+        """
+        controller, port, device = self.optical_slot(vm_name)
+        _LOG.info("Attaching %s to %s (%s port %d device %d)", iso_path.name, vm_name,
+                  controller, port, device)
+        self.run(
+            "storageattach",
+            vm_name,
+            "--storagectl",
+            controller,
+            "--port",
+            str(port),
+            "--device",
+            str(device),
+            "--type",
+            "dvddrive",
+            "--medium",
+            str(iso_path),
+        )
+
+    def detach_optical(self, vm_name: str) -> None:
+        """Eject whatever is in the machine's optical drive, tolerating none.
+
+        Args:
+            vm_name: The machine to eject from.
+        """
+        try:
+            controller, port, device = self.optical_slot(vm_name)
+        except VirtualBoxError:
+            _LOG.debug("%s has no optical slot to eject", vm_name)
+            return
+        self.run(
+            "storageattach",
+            vm_name,
+            "--storagectl",
+            controller,
+            "--port",
+            str(port),
+            "--device",
+            str(device),
+            "--type",
+            "dvddrive",
+            "--medium",
+            "emptydrive",
+            check=False,
+        )
+
     def bridge_interface_of(self, vm_name: str) -> str:
         """Read the host interface a machine's first adapter is bridged to.
 

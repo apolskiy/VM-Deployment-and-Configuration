@@ -62,6 +62,11 @@ class VirtualBoxConfig:
         vboxmanage: Absolute path to the ``VBoxManage`` executable.
         template_vm: Name of the registered VM exported as the golden image.
         template_ova: Path the golden OVA is written to and imported from.
+        template_image_ref: OCI reference the golden OVA is published to and
+            pulled from. Registries come and go, so this lives in configuration
+            rather than in documentation: moving the image to another registry,
+            or republishing it built on a newer Ubuntu, is a one-line change
+            here and every script follows it.
         memory_mb: RAM assigned to each provisioned guest.
         cpus: Virtual CPU count assigned to each provisioned guest.
         boot_timeout_seconds: How long to wait for a guest to accept SSH.
@@ -70,6 +75,7 @@ class VirtualBoxConfig:
     vboxmanage: Path
     template_vm: str
     template_ova: Path
+    template_image_ref: str
     memory_mb: int
     cpus: int
     boot_timeout_seconds: int
@@ -216,6 +222,23 @@ def _require_str(section: Mapping[str, Any], key: str, context: str) -> str:
     value = section.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigurationError(f"[{context}] requires a non-empty string field '{key}'")
+    return value.strip()
+
+
+def _optional_str(section: Mapping[str, Any], key: str, default: str = "") -> str:
+    """Read an optional string field, falling back to a default.
+
+    Args:
+        section: The table to read from.
+        key: The field name.
+        default: Value to use when the field is absent or blank.
+
+    Returns:
+        The field value with surrounding whitespace stripped, or the default.
+    """
+    value = section.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return default
     return value.strip()
 
 
@@ -449,6 +472,10 @@ def load_cluster_config(path: Path) -> ClusterConfig:
             vboxmanage=_require_path(vbox_table, "vboxmanage", "virtualbox"),
             template_vm=_require_str(vbox_table, "template_vm", "virtualbox"),
             template_ova=_require_path(vbox_table, "template_ova", "virtualbox"),
+            # Optional: only the publish/pull scripts read it, and a cluster
+            # built from a locally baked OVA never needs it. Requiring it would
+            # break every existing configuration for a field most runs ignore.
+            template_image_ref=_optional_str(vbox_table, "template_image_ref"),
             memory_mb=_require_int(vbox_table, "memory_mb", "virtualbox", _MIN_MEMORY_MB),
             cpus=_require_int(vbox_table, "cpus", "virtualbox", 1),
             boot_timeout_seconds=_require_int(vbox_table, "boot_timeout_seconds", "virtualbox", 30),

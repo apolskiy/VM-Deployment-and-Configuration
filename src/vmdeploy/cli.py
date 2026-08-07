@@ -38,7 +38,12 @@ from vmdeploy.provision import (
     provision_cluster,
     teardown_cluster,
 )
-from vmdeploy.setup import DEFAULT_ADMIN_USER, restore_bootstrap, run_setup
+from vmdeploy.setup import (
+    DEFAULT_ADMIN_USER,
+    restore_bootstrap,
+    run_keys_only_setup,
+    run_setup,
+)
 from vmdeploy.ssh_client import RemoteHost
 from vmdeploy.virtualbox import VBoxManage
 from vmdeploy.website import publish_site
@@ -245,7 +250,8 @@ def cmd_setup(config: ClusterConfig, args: argparse.Namespace) -> int:
     Returns:
         A process exit status.
     """
-    run_setup(
+    setup_action = run_keys_only_setup if args.keys_only else run_setup
+    setup_action(
         config,
         args.config,
         new_user=args.new_user,
@@ -398,6 +404,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--new-key",
         default="~/.vmdeploy/keys/vm_key",
         help="local path for the generated private key (default: ~/.vmdeploy/keys/vm_key)",
+    )
+    setup.add_argument(
+        "--keys-only",
+        action="store_true",
+        help="generate local keys and stop; use this when deploying a pulled golden "
+        "image, where there is no template machine to harden",
     )
     restore = subparsers.add_parser(
         "restore-bootstrap",

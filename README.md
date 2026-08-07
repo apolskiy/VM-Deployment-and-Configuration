@@ -17,6 +17,81 @@ Playwright and Allure.
 
 ---
 
+## Quickstart
+
+Two ways to run this. Pick by what you want.
+
+### A. Just see it work — containers, ~2 minutes, nothing to install but Docker
+
+No VirtualBox, no image download, no secrets. Works on Linux/macOS, or Windows
+**if** Hyper-V is enabled (which is mutually exclusive with VirtualBox — see the
+note under *Try it in containers*).
+
+```bash
+git clone https://github.com/apolskiy/VM-Deployment-and-Configuration.git
+cd VM-Deployment-and-Configuration
+python -m pip install -r requirements.txt
+
+docker compose up --build -d
+PYTHONPATH=src python -m pytest --require-cluster \
+    --balancer-url http://localhost --inventory-url http://localhost:5090
+docker compose down -v
+```
+
+### B. The real thing — three Ubuntu VMs on a Windows host with VirtualBox
+
+```powershell
+# 0. Prerequisites: VirtualBox 7.x, Python 3.11+, Go 1.26+, ~28 GB free, 8 GB RAM.
+git clone https://github.com/apolskiy/VM-Deployment-and-Configuration.git
+cd VM-Deployment-and-Configuration
+python -m pip install -r requirements.txt
+
+# 1+2. Generate YOUR keys and get the image. Two routes — pick one.
+#
+#   Route A: use the published image (no Ubuntu VM of your own needed).
+python -m vmdeploy.cli setup --keys-only  #    keys only; nothing to harden yet
+scripts\pull-image.ps1                    #    ~7 GB download
+#
+#   Route B: bake your own image from an Ubuntu VM you already have.
+python -m vmdeploy.cli setup              #    keys + harden that VM's login
+python -m vmdeploy.cli template           #    bake and export the golden OVA
+
+# 3. Check the host can actually take it (RAM, disk, tools, keys).
+python -m vmdeploy.cli preflight
+
+# 4. Boot and configure the cluster.
+python -m vmdeploy.cli provision
+python -m vmdeploy.cli configure
+
+# 5. Prove it works.
+python -m pytest --require-cluster --alluredir=allure-results
+allure generate allure-results --clean -o allure-report
+allure open allure-report
+
+# 6. When finished.
+python -m vmdeploy.cli teardown --yes
+```
+
+Steps 3–4 are also available as one command: `python -m vmdeploy.cli deploy`
+(route B only — `deploy` rebuilds the image, which route A does not have the
+source VM for).
+
+**Why `--keys-only` exists:** plain `setup` hardens a template VM you own, so it
+needs one to exist. If you pulled the image there is nothing to harden — but you
+still need the keypair whose public half goes into each guest's seed, and the
+AES key for the inventory. `--keys-only` generates exactly those and stops,
+contacting nothing.
+
+**What you end up with:** `http://apjump/` load-balances across `apnode1` and
+`apnode2`; `http://apjump:5090/clusterview` shows the decrypted inventory in a
+browser. Both are also reachable at the jump station's IP, which
+`vmdeploy.cli status` prints.
+
+**If you only have one machine and it runs VirtualBox**, use path B — the
+container path cannot run alongside VirtualBox on Windows.
+
+---
+
 ## Architecture
 
 ```
@@ -40,7 +115,9 @@ Windows host  (VirtualBox 7.2.14)
 
 `apubuntuD` is the golden-image source: a prepared Ubuntu VM that `template`
 bakes dependencies into and exports as `apcluster-golden.ova`. Every cluster
-guest is a clone of that image, individualised at boot.
+guest is a clone of that image, and takes its identity — hostname, SSH host
+keys, machine ID, and the only account key that will work — from a small
+cloud-init seed attached at import. The shared image itself holds none of that.
 
 ### How a request is traced back to a backend
 
@@ -96,36 +173,56 @@ validates both. GitHub Actions runs this on every push — see
 
 ### Sharing the VM image publicly
 
-For the VirtualBox path, the golden OVA can be published to any OCI registry
-(Docker Hub, GHCR) as a public artifact, so no one has to share a multi-gigabyte
-file privately:
+The golden OVA is published to an OCI registry as an ordinary artifact, so a
+multi-gigabyte appliance never has to be shared privately:
 
 ```powershell
-oras login docker.io -u <youruser>
-scripts\publish-image.ps1 -Ref docker.io/<youruser>/apcluster-golden:latest
-# anyone, no login needed:
-scripts\pull-image.ps1    -Ref docker.io/<youruser>/apcluster-golden:latest
+# Pull the published image (no login needed for a public artifact) and deploy it.
+scripts\pull-image.ps1
+python -m vmdeploy.cli provision
 ```
 
-> **Status: the VM image is not currently published, and a pulled image would
-> not yet be usable by anyone but its builder.** The image build deliberately
-> ships **no credentials at all** — `sanitize_image` strips cached registry, git
-> and `gh` credentials, locks every account except the operational user, and
-> removes build tooling, so the exported appliance carries nothing an attacker
-> could harvest. The consequence is that the only remaining login is reachable
-> solely by the *builder's* private key: there is no bootstrap path for a third
-> party yet. Injecting a deployer's own key at first boot (a cloud-init NoCloud
-> seed, so no shared secret ever exists) is the intended mechanism and is **not
-> implemented**. Until it is, treat the OVA as a personal artifact.
->
-> The transport above is real and CI-verified — the `publish-roundtrip` job
-> exercises both scripts against GHCR on every push and checks the pulled
-> appliance is byte-identical. It is the *bootstrap*, not the transport, that is
-> missing.
+Both scripts read the reference from **`[virtualbox].template_image_ref`** in
+`config/cluster.toml`, so no command line carries a registry name. That is
+deliberate: registries get retired and accounts get cleaned up, so moving the
+image — or republishing it rebuilt on a newer Ubuntu — is a one-line config
+change that every script follows, instead of an edit to documentation that
+readers may have already copied. Pass `-Ref` to override for a one-off.
 
-If you want to see the cluster working without any of this, use the container
-path above: it builds from source, needs no image and no secrets, and runs the
-same E2E suite in CI.
+Publishing (only the maintainer needs this):
+
+```powershell
+# A token, never an account password. GitHub disabled password auth in 2021.
+#   gh auth refresh -h github.com -s write:packages,delete:packages
+#   gh auth token | oras login ghcr.io -u <youruser> --password-stdin
+scripts\publish-image.ps1
+```
+
+> **A published GHCR package is private by default — repository visibility does
+> not propagate to packages.** Until it is made public once in the package's
+> settings, an anonymous `pull-image.ps1` fails with a `401`, which looks like a
+> broken project rather than a permissions setting. `pull-image.ps1` says so in
+> its error text if you hit it.
+
+**The image is safe to publish because it contains no credentials at all.**
+Sanitisation strips every cached registry, git, and `gh` credential, locks every
+account, and removes **every `authorized_keys`, including the builder's own**.
+A downloaded appliance therefore has no usable login — verified by booting the
+exported OVA with no seed attached and confirming SSH answers
+`Permission denied (publickey,password)` for the builder's own key.
+
+Access is created at deploy time instead: `provision` writes a per-guest
+cloud-init NoCloud seed carrying *your* public key and attaches it as a virtual
+CD, and the guest configures itself on first boot. No shared secret ever exists,
+so publishing the image grants nobody anything. See
+*[First-boot identity](#first-boot-identity-how-a-credential-free-image-becomes-your-cluster)*.
+
+The transport is CI-verified: the `publish-roundtrip` job runs both scripts
+against GHCR on every push and asserts the pulled artifact is byte-identical to
+the published one.
+
+If you only want to see the project work, the container path above needs no
+image and no download at all.
 
 ---
 
@@ -163,6 +260,58 @@ only when it has genuinely drifted — no unnecessary rebuilds, no silent
 staleness. Secrets are never baked in: the AES key and datastore are
 cluster-specific and are written to each clone at configure time, not into the
 shared image.
+
+---
+
+## First-boot identity: how a credential-free image becomes your cluster
+
+A distributable image and a usable image pull in opposite directions. Anything
+baked in that lets *you* log in also lets **everyone who downloads it** log in.
+This project resolves that by shipping an image with no credentials whatsoever
+and supplying identity per guest at deploy time.
+
+**What the image build removes** (`sanitize_image`, run just before export):
+
+- every cached Docker/registry, git, and `gh` credential, and shell history;
+- every SSH key, **including the operational account's `authorized_keys`** — the
+  build fails rather than exports if one survives;
+- every human account except the operational one, which is left in place but
+  has no way in;
+- the build tooling itself (`git`, `docker`, `gh`, `/var/lib/docker`), because
+  a runtime image has no use for it and it is what accumulates credentials.
+
+**What the image build arms** (`arm_cloud_init`):
+
+Ubuntu's installer disables cloud-init after first boot and pins
+`datasource_list: [None]` in `/etc/cloud/cloud.cfg.d/99-installer.cfg`. Both are
+removed, `NoCloud` is pinned explicitly, and `cloud-init clean --logs
+--machine-id` makes the next boot a genuine first boot. Ordering matters here:
+`clean` runs the hooks in `/etc/cloud/clean.d`, which delete drop-in
+configuration, so vmdeploy's drop-ins are written *after* the clean — including
+one that re-disables cloud-init's network handling, because the installer's
+version of that setting is itself removed by the clean.
+
+**What `provision` supplies per guest** (`vmdeploy.seed`):
+
+A ~66 KB ISO labelled `cidata` holding `user-data` and `meta-data`, attached to
+the guest's optical drive before it is ever started. It carries the hostname,
+a unique instance id, and **your** public key. On first boot cloud-init creates
+the account with that key, sets the hostname and `/etc/hosts`, and regenerates
+SSH host keys so no two clones share an identity.
+
+```
+      golden OVA (no credentials, cannot be logged into)
+                       +
+      per-guest seed ISO  ──  hostname + instance-id + YOUR public key
+                       ↓
+             a guest only you can reach
+```
+
+Because the key is injected rather than shared, publishing the image grants
+nobody access, and two people deploying the same image get clusters neither can
+reach in the other's environment. It also removed a whole provisioning step: the
+old flow booted a clone, logged in over SSH to rename it, and rebooted. Identity
+now exists before first boot, so that pass and its reboot are gone.
 
 ---
 
@@ -245,7 +394,8 @@ src/vmdeploy/
   exceptions.py               Exception hierarchy rooted at VmDeployError
   ssh_client.py               Context-managed Paramiko wrapper (agent-aware)
   virtualbox.py               VBoxManage wrapper; LAN-aware guest IP discovery
-  provision.py                Template build/export, VM import + individualisation
+  provision.py                Template build/export, VM import + seeded first boot
+  seed.py                     cloud-init NoCloud seed ISO builder (per-guest identity)
   apache.py                   Balancer and backend vhost rendering + service control
   website.py                  Site retrieval and per-backend identity stamping
   inventory.py                AES-256-GCM client, key management, record upsert
@@ -398,15 +548,19 @@ credentials — the same principle as any public Terraform or Ansible project.
   `VMDEPLOY_SUDO_PASSWORD`, a key written to a runner-local path). Secrets are
   never downloadable as repository files. (The E2E tier still needs a host that
   can run VirtualBox; see *Known limitations*.)
-- **The golden image ships no credentials or build tooling.** A distributable
-  image must not carry the push credentials that build hosts accumulate.
-  `template` therefore **sanitises the image before export**: it removes cached
-  Docker/registry, git, and `gh` credentials, shell history, and stray private
-  keys from every account (the operational user's `authorized_keys` is kept);
-  locks every human account except the operational user; and purges `git`,
-  `docker`, and `gh` entirely (the runtime cluster needs none of them). Build
-  and push container/VM images from **CI or a dedicated build host**, never from
-  the golden image or a deployed guest.
+- **The golden image ships no credentials at all, and no build tooling.** A
+  distributable image must not carry the push credentials that build hosts
+  accumulate, nor any login. `template` therefore **sanitises the image before
+  export**: it removes cached Docker/registry, git, and `gh` credentials, shell
+  history, and **every SSH key including the operational account's own
+  `authorized_keys`**; locks every human account; and purges `git`, `docker`,
+  and `gh` entirely (the runtime cluster needs none of them). The export
+  **fails** rather than ships if an `authorized_keys` survives — a surviving key
+  would hand every downloader a working login to every guest deployed from it.
+  Access is supplied per guest at deploy time from a cloud-init seed instead;
+  see *[First-boot identity](#first-boot-identity-how-a-credential-free-image-becomes-your-cluster)*.
+  Build and push container/VM images from **CI or a dedicated build host**,
+  never from the golden image or a deployed guest.
 - **The template box is never altered by a build.** Because that box is often
   also a working machine (with its own docker/git logins), `template` snapshots
   it first and **rolls back** after export — so the box keeps its tooling,
@@ -443,14 +597,14 @@ from anywhere (or double-click). Each sets `PYTHONPATH` and calls the CLI.
 | `restore-bootstrap.ps1` | `vmdeploy restore-bootstrap` | re-enable a disabled account on the template box (image stays hardened) |
 | `preflight.ps1` | `vmdeploy preflight` | check RAM/disk/tools/keys (run before deploy & teardown) |
 | `deploy.ps1` / `deploy.bat` | `vmdeploy deploy` | preflight → template build → provision → configure |
-| `provision.ps1` | `vmdeploy provision` | import + boot + individualise the 3 guests |
+| `provision.ps1` | `vmdeploy provision` | seed + import + boot the 3 guests |
 | `configure.ps1` | `vmdeploy configure` | Apache, site, inventory service, manifest |
 | `teardown.ps1 -Force` / `teardown.bat` | `vmdeploy teardown --yes` | destroy guests + update manifest |
 | `status.ps1` | `vmdeploy status` | VM state, addresses, and live endpoint URLs |
 | `e2e-test.ps1` | `pytest --require-cluster` | run the suite against the live cluster |
 | `manifest.ps1` | `inventory manifest …` | inspect/reconcile the local manifest (Go tool) |
 | `allure-report.ps1` | `allure generate …` | build and open the static Allure report |
-| `publish-image.ps1` / `pull-image.ps1` | `oras push` / `oras pull` | publish or fetch the golden OVA as a public OCI artifact |
+| `publish-image.ps1` / `pull-image.ps1` | `oras push` / `oras pull` | publish or fetch the golden OVA (reference from `template_image_ref`) |
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -465,7 +619,7 @@ python -m vmdeploy.cli deploy
 # Or step by step
 python -m vmdeploy.cli template            # bake deps into the template, export OVA
 python -m vmdeploy.cli template --export-only   # export as-is, skip baking
-python -m vmdeploy.cli provision           # import 3x, boot, individualise
+python -m vmdeploy.cli provision           # seed + import 3x, boot
 python -m vmdeploy.cli configure           # Apache + site + Go service + manifest
 python -m vmdeploy.cli status              # state + live endpoint URLs
 python -m vmdeploy.cli teardown --yes      # destroy guests, mark manifest Removed
@@ -500,18 +654,25 @@ Endpoints:
 
 ### What `provision` does per guest, and why serially
 
-Guests are provisioned **one at a time**. Clones share `/etc/machine-id`, and
-netplan's default `dhcp-identifier` derives from it — booting clones
-concurrently makes them contend for a single DHCP lease. Each guest is made
-unique before its successor starts:
+Guests are provisioned **one at a time**. The image ships `/etc/machine-id`
+blanked so every clone generates its own, but netplan's default
+`dhcp-identifier` derives from that id — so booting clones concurrently, before
+each has generated one, makes them contend for a single DHCP lease. Each guest
+is fully up before its successor starts:
 
 1. Destroy any existing VM of that name, import the OVA, size it, bridge it onto
    the same host interface the template used.
-2. Start headless, discover the **reachable LAN** address (the template carries
+2. **Build a cloud-init seed ISO for this guest and attach it** — hostname,
+   unique instance id, and your public key — *before the machine is started*.
+3. Start headless, discover the **reachable LAN** address (the template carries
    a `docker0` bridge at 172.17.0.1 that is filtered out), wait for SSH.
-3. Regenerate `/etc/machine-id`, regenerate SSH host keys, set hostname, fix the
-   `127.0.1.1` entry in `/etc/hosts`.
-4. Reboot, rediscover, verify the guest reports its new hostname.
+4. Wait for `cloud-init status --wait`, then verify the guest reports the
+   expected hostname. SSH answering only proves sshd is up; cloud-init may still
+   be creating the account, so this turns a race into a clear failure that
+   carries the guest's own diagnosis.
+
+There is no second boot. Identity arrives with the medium rather than being
+applied over SSH afterwards, which removed a reboot and a reconnect per guest.
 
 ---
 
@@ -631,3 +792,16 @@ All Python carries type hints and Google-style docstrings (`Args:`,
   host. The unit tier (`-m "not e2e"`) runs anywhere.
 - **IPv6 is best-effort.** Recorded when a guest reports a global address,
   omitted otherwise; no cluster function depends on it.
+- **Each guest's hostname appears twice in `/etc/hosts`**, as
+  `127.0.1.1 apjump apjump`. This is cosmetic and deliberately left alone.
+  cloud-init renders the distro template `/etc/cloud/templates/hosts.debian.tmpl`,
+  whose line is literally `127.0.1.1 {{fqdn}} {{hostname}}`. The cluster uses
+  single-label hostnames with no DNS domain, so both placeholders resolve to the
+  same string. The only way to change it is to override that template inside the
+  golden image — and that file is **shipped by the `cloud-init` package**, so a
+  routine package or system update would overwrite it and silently destroy the
+  customisation, leaving no error and no signal that anything changed. A
+  duplicate alias is valid and resolution is unaffected; a modification that
+  decays invisibly on upgrade is worse than the blemish it fixes.
+  (`manage_etc_hosts: localhost` is not an escape hatch: that mode writes the
+  same `fqdn hostname` pair onto the `127.0.0.1` line instead.)

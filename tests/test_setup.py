@@ -15,7 +15,7 @@ import paramiko
 import pytest
 
 from vmdeploy.config import load_cluster_config, local_overlay_path
-from vmdeploy.setup import generate_ssh_keypair, write_local_overlay
+from vmdeploy.setup import generate_ssh_keypair, run_keys_only_setup, write_local_overlay
 
 
 @allure.epic("Cluster Infrastructure")
@@ -197,3 +197,72 @@ class TestLocalOverlay:
         monkeypatch.setenv("VMDEPLOY_SSH_USER", "override_user")
         config = load_cluster_config(base)
         assert config.ssh.user == "override_user"
+
+
+@allure.epic("Cluster Infrastructure")
+@allure.feature("Setup")
+@allure.story("Keys-only setup for a pulled image")
+class TestKeysOnlySetup:
+    """Someone deploying the published image has no template to harden.
+
+    Plain setup connects to a template VM and hardens it, so it cannot run at
+    all for a deployer who pulled the golden image. They still need the local
+    key material every guest is keyed from, which is what this path produces.
+    """
+
+    @allure.title("Key material is produced without contacting anything")
+    def test_generates_keys_and_overlay(self, tmp_path: Path) -> None:
+        """No VBoxManage, no SSH: it must work before any VM exists.
+
+        Args:
+            tmp_path: Pytest-provided temporary directory.
+        """
+        base = tmp_path / "cluster.toml"
+        base.write_text(
+            _BASE.format(vboxmanage=(tmp_path / "vb").as_posix()).replace(
+                'key_file = "~/.vmdeploy/keys/inventory.key"',
+                f'key_file = "{(tmp_path / "inventory.key").as_posix()}"',
+            ),
+            encoding="utf-8",
+        )
+        config = load_cluster_config(base)
+
+        run_keys_only_setup(
+            config, base, new_user="qa_engineer", new_key_path=tmp_path / "vm_key"
+        )
+
+        # The public half is what lands in every guest's cloud-init seed.
+        assert (tmp_path / "vm_key").is_file()
+        assert (tmp_path / "vm_key.pub").read_text(encoding="ascii").startswith("ssh-ed25519 ")
+        assert (tmp_path / "inventory.key").is_file()
+
+        reloaded = load_cluster_config(base)
+        assert reloaded.ssh.user == "qa_engineer"
+        assert reloaded.ssh.key_path == tmp_path / "vm_key"
+
+    @allure.title("Re-running does not invalidate an existing key")
+    def test_is_idempotent(self, tmp_path: Path) -> None:
+        """Regenerating would lock the operator out of a running cluster.
+
+        Args:
+            tmp_path: Pytest-provided temporary directory.
+        """
+        base = tmp_path / "cluster.toml"
+        base.write_text(
+            _BASE.format(vboxmanage=(tmp_path / "vb").as_posix()).replace(
+                'key_file = "~/.vmdeploy/keys/inventory.key"',
+                f'key_file = "{(tmp_path / "inventory.key").as_posix()}"',
+            ),
+            encoding="utf-8",
+        )
+        config = load_cluster_config(base)
+
+        run_keys_only_setup(
+            config, base, new_user="qa_engineer", new_key_path=tmp_path / "vm_key"
+        )
+        first = (tmp_path / "vm_key.pub").read_text(encoding="ascii")
+        run_keys_only_setup(
+            config, base, new_user="qa_engineer", new_key_path=tmp_path / "vm_key"
+        )
+
+        assert (tmp_path / "vm_key.pub").read_text(encoding="ascii") == first

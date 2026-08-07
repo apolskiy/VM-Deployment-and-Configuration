@@ -153,7 +153,7 @@ jobs:
 
       - name: Stand in a small appliance at the configured path
         run: |
-          ova=$(python scripts/_resolve_template_ova.py config/cluster.toml | tail -1)
+          ova=$(python scripts/_resolve_template_ova.py config/cluster.toml | head -1)
           echo "resolved template_ova: $ova"
           mkdir -p "$(dirname "$ova")"
           head -c 1048576 /dev/urandom > "$ova"
@@ -163,8 +163,15 @@ jobs:
         env:
           ORAS_PASS: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ref="ghcr.io/${{ github.repository_owner }}/apcluster-golden-citest:${{ github.sha }}"
+          # A fixed tag, deliberately not ${{ github.sha }}: a per-commit tag
+          # would leave a new package version behind on every push, and they
+          # accumulate in the account's package list forever. Reusing one tag
+          # keeps the test artifact to a single entry.
+          ref="ghcr.io/${{ github.repository_owner }}/apcluster-golden-citest:citest"
+          echo "$ref" > /tmp/citest-ref
           echo "$ORAS_PASS" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # -Ref is passed explicitly so CI never pushes over the real published
+          # image; the default would come from [virtualbox].template_image_ref.
           pwsh -File scripts/publish-image.ps1 -Ref "$ref"
           pwsh -File scripts/pull-image.ps1 -Ref "$ref" -DestDir /tmp/pulled
           sha256sum /tmp/pulled/apcluster-golden.ova | awk '{print $1}' > /tmp/pulled.sha256
@@ -172,4 +179,20 @@ jobs:
             echo "round trip verified: pulled appliance is byte-identical to the published one"
           else
             echo "MISMATCH between published and pulled appliance"; exit 1
+          fi
+
+      # Best effort, and deliberately non-fatal. GITHUB_TOKEN carries a
+      # `packages: write` permission but no delete scope, so the registry may
+      # refuse this; the fixed tag above is what actually bounds the clutter.
+      # Runs even when the round trip failed, so a failure leaves nothing behind.
+      - name: Remove the CI test artifact
+        if: always()
+        continue-on-error: true
+        run: |
+          ref=$(cat /tmp/citest-ref 2>/dev/null) || exit 0
+          if oras manifest delete --force "$ref"; then
+            echo "deleted $ref"
+          else
+            echo "could not delete $ref (expected: GITHUB_TOKEN cannot delete packages)."
+            echo "It is a single reusable tag, so it does not accumulate."
           fi
