@@ -107,14 +107,25 @@ scripts\publish-image.ps1 -Ref docker.io/<youruser>/apcluster-golden:latest
 scripts\pull-image.ps1    -Ref docker.io/<youruser>/apcluster-golden:latest
 ```
 
-A published image carries a **deliberately public, disposable bootstrap login**
-— it is not a secret, and it must not be, because anyone who can pull the image
-could read it anyway (encrypting a credential that everyone must be able to use
-buys nothing). Its only job is to let `vmdeploy setup` in once, which then
-generates *your own* unique keys and `vmadmin` user and **disables the public
-bootstrap**. So the image is safe to publish and safe to use: examine the code,
-pull the image, deploy, and see it work — then setup makes your instance yours.
-Real per-deployment secrets are never public.
+> **Status: the VM image is not currently published, and a pulled image would
+> not yet be usable by anyone but its builder.** The image build deliberately
+> ships **no credentials at all** — `sanitize_image` strips cached registry, git
+> and `gh` credentials, locks every account except the operational user, and
+> removes build tooling, so the exported appliance carries nothing an attacker
+> could harvest. The consequence is that the only remaining login is reachable
+> solely by the *builder's* private key: there is no bootstrap path for a third
+> party yet. Injecting a deployer's own key at first boot (a cloud-init NoCloud
+> seed, so no shared secret ever exists) is the intended mechanism and is **not
+> implemented**. Until it is, treat the OVA as a personal artifact.
+>
+> The transport above is real and CI-verified — the `publish-roundtrip` job
+> exercises both scripts against GHCR on every push and checks the pulled
+> appliance is byte-identical. It is the *bootstrap*, not the transport, that is
+> missing.
+
+If you want to see the cluster working without any of this, use the container
+path above: it builds from source, needs no image and no secrets, and runs the
+same E2E suite in CI.
 
 ---
 

@@ -6,12 +6,21 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string] $Ref,
-    [string] $OvaPath = "$env:USERPROFILE\.vmdeploy\apcluster-golden.ova"
+    [string] $OvaPath,
+    [string] $Config = "config/cluster.toml"
 )
 
 $ErrorActionPreference = "Stop"
 if (-not (Get-Command oras -ErrorAction SilentlyContinue)) {
     throw "The 'oras' CLI is not on PATH. Install it from https://oras.land/docs/installation"
+}
+
+# Resolve the OVA from the configuration rather than assuming a location, so
+# this cannot drift from [virtualbox].template_ova the way a hardcoded default
+# silently did.
+if (-not $OvaPath) {
+    $OvaPath = (python scripts/_resolve_template_ova.py $Config | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or -not $OvaPath) { throw "could not resolve template_ova from $Config" }
 }
 if (-not (Test-Path $OvaPath)) {
     throw "OVA not found at '$OvaPath'. Build it first: python -m vmdeploy.cli template"

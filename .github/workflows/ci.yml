@@ -105,3 +105,71 @@ jobs:
           name: allure-results
           path: allure-results
           if-no-files-found: ignore
+
+  # The publish/pull scripts move the golden OVA through an OCI registry so the
+  # image never has to be shared privately. They were documented but had never
+  # been executed, which is how a wrong default path survived in them. This job
+  # runs the real scripts end to end against GHCR using a small stand-in
+  # appliance, so the round trip is exercised on every push. It needs neither
+  # VirtualBox nor a Docker daemon, so it is unaffected by the Hyper-V/VirtualBox
+  # conflict that stops the container path running on a VirtualBox host.
+  publish-roundtrip:
+    runs-on: ubuntu-latest
+    needs: unit
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Install ORAS
+        env:
+          ORAS_VERSION: "1.2.0"
+        run: |
+          curl -fsSL \
+            "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+          oras version
+
+      # Only the hypervisor path needs overriding; template_ova is deliberately
+      # left to the committed default so this job proves that default resolves.
+      - name: Point the config at this runner
+        run: |
+          cat > config/cluster.local.toml <<'EOF'
+          [ssh]
+          user = "ci"
+          key_path = "/tmp/nokey"
+          [virtualbox]
+          vboxmanage = "/usr/bin/VBoxManage"
+          EOF
+
+      - name: Stand in a small appliance at the configured path
+        run: |
+          ova=$(python scripts/_resolve_template_ova.py config/cluster.toml | tail -1)
+          echo "resolved template_ova: $ova"
+          mkdir -p "$(dirname "$ova")"
+          head -c 1048576 /dev/urandom > "$ova"
+          sha256sum "$ova" | awk '{print $1}' > /tmp/published.sha256
+
+      - name: Publish and pull back through the real scripts
+        env:
+          ORAS_PASS: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ref="ghcr.io/${{ github.repository_owner }}/apcluster-golden-citest:${{ github.sha }}"
+          echo "$ORAS_PASS" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          pwsh -File scripts/publish-image.ps1 -Ref "$ref"
+          pwsh -File scripts/pull-image.ps1 -Ref "$ref" -DestDir /tmp/pulled
+          sha256sum /tmp/pulled/apcluster-golden.ova | awk '{print $1}' > /tmp/pulled.sha256
+          if diff -q /tmp/published.sha256 /tmp/pulled.sha256; then
+            echo "round trip verified: pulled appliance is byte-identical to the published one"
+          else
+            echo "MISMATCH between published and pulled appliance"; exit 1
+          fi

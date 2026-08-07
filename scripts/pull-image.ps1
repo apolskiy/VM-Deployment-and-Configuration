@@ -6,12 +6,21 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string] $Ref,
-    [string] $DestDir = "$env:USERPROFILE\.vmdeploy"
+    [string] $DestDir,
+    [string] $Config = "config/cluster.toml"
 )
 
 $ErrorActionPreference = "Stop"
 if (-not (Get-Command oras -ErrorAction SilentlyContinue)) {
     throw "The 'oras' CLI is not on PATH. Install it from https://oras.land/docs/installation"
+}
+
+# Land the appliance exactly where [virtualbox].template_ova expects it, so the
+# pulled image is the one the tooling then imports.
+if (-not $DestDir) {
+    $ovaPath = (python scripts/_resolve_template_ova.py $Config | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or -not $ovaPath) { throw "could not resolve template_ova from $Config" }
+    $DestDir = Split-Path -Parent $ovaPath
 }
 
 New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
