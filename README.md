@@ -182,6 +182,21 @@ scripts\pull-image.ps1
 python -m vmdeploy.cli provision
 ```
 
+It is published to two registries, and both are public and pullable anonymously:
+
+| Registry | Reference | Notes |
+| -------- | --------- | ----- |
+| GHCR | `ghcr.io/apolskiy/apcluster-golden:latest` | The default in `cluster.toml`. No pull rate limits. |
+| Docker Hub | `docker.io/apolskiy/apcluster-golden:latest` | Mirror. Anonymous pulls are rate limited. |
+
+Both hold the identical appliance: the OVA layer digest is
+`sha256:777f1ed6…` in each, so it does not matter which one you pull from. The
+second exists so the project keeps working if one account is ever cleaned up;
+switching is a one-line change to `template_image_ref`, with no image rebuild.
+
+The download is roughly 7.2 GB either way. To evaluate the project rather than
+run the VM cluster, the container path above needs no download at all.
+
 Both scripts read the reference from **`[virtualbox].template_image_ref`** in
 `config/cluster.toml`, so no command line carries a registry name. That is
 deliberate: registries get retired and accounts get cleaned up, so moving the
@@ -196,7 +211,34 @@ Publishing (only the maintainer needs this):
 #   gh auth refresh -h github.com -s write:packages,delete:packages
 #   gh auth token | oras login ghcr.io -u <youruser> --password-stdin
 scripts\publish-image.ps1
+
+# The mirror. -Ref is explicit so template_image_ref keeps naming the default.
+#   oras login docker.io -u <youruser>          (a Docker access token)
+scripts\publish-image.ps1 -Ref docker.io/<youruser>/apcluster-golden:latest
 ```
+
+Expect this to take a while: it is one ~7.2 GB blob, and a dropped connection
+restarts it rather than resuming.
+
+**CI cleanup secret.** The `publish-roundtrip` job pushes a 1 MB stand-in
+appliance to `ghcr.io/<owner>/apcluster-golden-citest:citest` to prove the
+publish and pull scripts still work. To have the job delete that artifact
+afterwards instead of leaving it in the owner's package list, add a repository
+secret named **`GHCR_CLEANUP_TOKEN`**:
+
+- A **classic** personal access token, from *Settings, Developer settings,
+  Personal access tokens, Tokens (classic)*.
+- Scope: **`delete:packages`** only. Nothing else is needed, and nothing else
+  should be granted. It cannot read code or publish anything.
+- Add it with
+  `gh secret set GHCR_CLEANUP_TOKEN --repo <owner>/VM-Deployment-and-Configuration`.
+
+`GITHUB_TOKEN` cannot do this: the workflow `permissions:` block offers only
+`packages: read|write` and there is no delete permission, which a live run
+confirmed by returning a denial. The step is optional, and skips with an
+explanatory message when the secret is absent, so forks and fresh clones still
+pass CI. Because the tag is reused rather than generated per commit, the test
+artifact never accumulates even without the secret.
 
 > **A published GHCR package is private by default. Repository visibility does
 > not propagate to packages.** Until it is made public once in the package's
