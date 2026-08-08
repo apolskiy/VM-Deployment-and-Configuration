@@ -68,7 +68,9 @@ try {
     if ($Ref -like "ghcr.io/*") {
         Write-Host ""
         Write-Host "GHCR packages start PRIVATE. Make it public once, or anonymous pulls 401:"
-        Write-Host "  https://github.com/users/apolskiy/packages/container/apcluster-golden/settings"
+        $owner = ($Ref -split "/")[1]
+        $pkg = (($Ref -split "/")[-1] -split ":")[0]
+        Write-Host "  https://github.com/users/$owner/packages/container/$pkg/settings"
     }
 }
 finally { Pop-Location }

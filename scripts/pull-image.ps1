@@ -23,8 +23,23 @@ $ErrorActionPreference = "Stop"
 if (-not (Get-Command oras -ErrorAction SilentlyContinue)) {
     throw "The 'oras' CLI is not on PATH. Install it from https://oras.land/docs/installation"
 }
-$curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
-if (-not $curl) { throw "curl.exe was not found; it ships with Windows 10 1803 and later." }
+# curl is the resumable transport. The executable is curl.exe on Windows and
+# curl elsewhere, and CI runs this script under pwsh on Linux, so both are
+# accepted. -CommandType Application matters on Windows PowerShell, where a bare
+# 'curl' is an alias for Invoke-WebRequest rather than the real binary.
+$curl = $null
+foreach ($candidate in @("curl.exe", "curl")) {
+    $found = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($found) { $curl = $found.Source; break }
+}
+if (-not $curl) {
+    throw ("curl was not found on PATH. It ships with Windows 10 1803 and later, and with " +
+           "most Linux distributions.")
+}
+
+# Discard headers-only responses to the platform's null device.
+$nullDevice = if ($env:OS -eq "Windows_NT") { "NUL" } else { "/dev/null" }
 
 # Land the appliance exactly where [virtualbox].template_ova expects it, and
 # pull the reference the configuration names, so a registry move is a config
@@ -82,10 +97,10 @@ $blobUrl = "https://$apiHost/v2/$repository/blobs/$digest"
 #    Authentication is discovered from the WWW-Authenticate challenge rather
 #    than hardcoded, so the same code path serves GHCR and Docker Hub.
 function Resolve-BlobSource {
-    param([string] $Url, [string] $Repository, [string] $CurlPath)
+    param([string] $Url, [string] $Repository, [string] $CurlPath, [string] $NullDevice)
 
     $token = ""
-    $challenge = & $CurlPath -s -o NUL -D - $Url 2>&1 | Out-String
+    $challenge = & $CurlPath -s -o $NullDevice -D - $Url 2>&1 | Out-String
     if ($challenge -match '(?im)^www-authenticate:\s*Bearer\s+(.+)$') {
         $params = @{}
         foreach ($m in [regex]::Matches($Matches[1], '(\w+)="([^"]*)"')) {
@@ -107,7 +122,7 @@ function Resolve-BlobSource {
     if ($token) { $authArgs = @("-H", "Authorization: Bearer $token") }
 
     # Follow exactly one hop by hand so the range lands on the object itself.
-    $headers = & $CurlPath -s -o NUL -D - @authArgs $Url 2>&1 | Out-String
+    $headers = & $CurlPath -s -o $NullDevice -D - @authArgs $Url 2>&1 | Out-String
     $location = ([regex]::Match($headers, '(?im)^location:\s*(\S+)')).Groups[1].Value
     if ($location) {
         # Presigned: it carries its own credentials, so no header is sent on.
@@ -128,7 +143,8 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         Write-Host "Downloading $ovaName to $DestDir"
     }
 
-    $source = Resolve-BlobSource -Url $blobUrl -Repository $repository -CurlPath $curl
+    $source = Resolve-BlobSource -Url $blobUrl -Repository $repository `
+        -CurlPath $curl -NullDevice $nullDevice
     & $curl -C - --retry 5 --retry-delay 5 --retry-all-errors `
         --progress-bar @($source.Args) -o $landed $source.Url
     if ($LASTEXITCODE -eq 0) { break }
