@@ -50,7 +50,7 @@ python -m pip install -r requirements.txt
 #
 #   Route A: use the published image (no Ubuntu VM of your own needed).
 python -m vmdeploy.cli setup --keys-only  #    keys only; nothing to harden yet
-scripts\pull-image.ps1                    #    ~7 GB download
+scripts\pull-image.ps1                    #    ~7 GB, resumable; re-run to continue
 #
 #   Route B: bake your own image from an Ubuntu VM you already have.
 python -m vmdeploy.cli setup              #    keys + harden that VM's login
@@ -197,6 +197,29 @@ switching is a one-line change to `template_image_ref`, with no image rebuild.
 The download is roughly 7.2 GB either way. To evaluate the project rather than
 run the VM cluster, the container path above needs no download at all.
 
+**The download resumes.** A single blob that size will occasionally be cut short
+by a network fault, and `oras pull` cannot resume, so an interrupted transfer
+costs the whole thing. `pull-image.ps1` therefore reads the manifest for the
+blob digest and size, then fetches the blob itself with `curl -C -`, which
+continues from the bytes already on disk. If a transfer is interrupted, **run
+the same command again** and it picks up where it stopped rather than starting
+over:
+
+```powershell
+scripts\pull-image.ps1        # interrupted at 1.3 GB? run it again, it continues
+```
+
+It retries automatically within a run, and on the final failure it **keeps** the
+partial file precisely so the next run can resume. Authentication is discovered
+from the registry's `WWW-Authenticate` challenge rather than hardcoded, so the
+same code path works for GHCR and Docker Hub.
+
+Resuming means appending to a file that was not written in one pass, so the
+script **verifies the finished file against the digest the registry advertises**
+before reporting success, which is the same integrity guarantee `oras` applies
+internally. A file whose digest does not match is deleted rather than left for
+`provision` to fail on obscurely.
+
 Both scripts read the reference from **`[virtualbox].template_image_ref`** in
 `config/cluster.toml`, so no command line carries a registry name. That is
 deliberate: registries get retired and accounts get cleaned up, so moving the
@@ -228,10 +251,16 @@ secret named **`GHCR_CLEANUP_TOKEN`**:
 
 - A **classic** personal access token, from *Settings, Developer settings,
   Personal access tokens, Tokens (classic)*.
-- Scope: **`delete:packages`** only. Nothing else is needed, and nothing else
-  should be granted. It cannot read code or publish anything.
+- Scopes: **`delete:packages`** and **`read:packages`**. The API rejects a
+  delete carrying only the first, with
+  `403 You need at least delete:packages and read:packages scopes`. Ticking
+  `read:packages` also selects its parent `write:packages`, so the token can
+  publish packages as well; give it a short expiry and regenerate rather than
+  extend it. It still cannot read repository code.
 - Add it with
   `gh secret set GHCR_CLEANUP_TOKEN --repo <owner>/VM-Deployment-and-Configuration`.
+  Editing an existing token's scopes does not change its value, so the secret
+  does not need updating after a scope change.
 
 `GITHUB_TOKEN` cannot do this: the workflow `permissions:` block offers only
 `packages: read|write` and there is no delete permission, which a live run
@@ -656,7 +685,7 @@ from anywhere (or double-click). Each sets `PYTHONPATH` and calls the CLI.
 | `e2e-test.ps1` | `pytest --require-cluster` | run the suite against the live cluster |
 | `manifest.ps1` | `inventory manifest …` | inspect/reconcile the local manifest (Go tool) |
 | `allure-report.ps1` | `allure generate …` | build and open the static Allure report |
-| `publish-image.ps1` / `pull-image.ps1` | `oras push` / `oras pull` | publish or fetch the golden OVA (reference from `template_image_ref`) |
+| `publish-image.ps1` / `pull-image.ps1` | `oras push` / resumable `curl` | publish or fetch the golden OVA (reference from `template_image_ref`) |
 
 ```powershell
 $env:PYTHONPATH = "src"

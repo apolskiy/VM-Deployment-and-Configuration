@@ -37,6 +37,7 @@ from vmdeploy.provision import (
     export_golden_template,
     provision_cluster,
     teardown_cluster,
+    wait_for_cluster_ready,
 )
 from vmdeploy.setup import (
     DEFAULT_ADMIN_USER,
@@ -149,6 +150,11 @@ def cmd_configure(config: ClusterConfig, args: argparse.Namespace) -> int:
         deploy_service(jump, config, args.goservice_dir)
         ipv6 = enrich_with_ipv6(config, addresses)
         seed_inventory(jump, config, build_records(config, addresses, ipv6))
+
+    # Do not report success until the endpoints actually answer. Returning as
+    # soon as the units are 'active' left the documented next step, running the
+    # suite, racing the services it tests.
+    wait_for_cluster_ready(config, jump_address)
 
     _report_addresses(addresses)
     _print_endpoints(config, jump_address)

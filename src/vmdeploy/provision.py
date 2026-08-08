@@ -20,8 +20,11 @@ at a time so a clone is always made unique before its successor is started.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Final
+
+import requests
 
 from vmdeploy.config import ClusterConfig, HostConfig
 from vmdeploy.exceptions import ProvisioningTimeoutError, VmDeployError
@@ -32,6 +35,8 @@ from vmdeploy.ssh_client import RemoteHost, wait_for_ssh
 from vmdeploy.virtualbox import VBoxManage, VMState
 
 _LOG: Final[logging.Logger] = logging.getLogger(__name__)
+
+_READINESS_POLL_SECONDS: Final[int] = 3
 
 
 def export_golden_template(vbox: VBoxManage, config: ClusterConfig) -> None:
@@ -182,6 +187,49 @@ def provision_host(vbox: VBoxManage, config: ClusterConfig, host: HostConfig) ->
 
     _LOG.info("%s provisioned at %s", host.hostname, address)
     return address
+
+
+def wait_for_cluster_ready(
+    config: ClusterConfig, jump_address: str, timeout_seconds: int = 180
+) -> None:
+    """Block until the cluster actually serves traffic, not merely until it starts.
+
+    ``systemctl is-active`` reports success as soon as systemd has forked the
+    process, which is well before Apache accepts connections or the balancer can
+    reach its backends. Returning at that point makes the documented sequence
+    (configure, then run the suite) a race that fails intermittently on a first
+    deploy, so readiness is measured at the endpoints a user actually hits.
+
+    Args:
+        config: The cluster configuration, providing the inventory port.
+        jump_address: The jump station's reachable address.
+        timeout_seconds: How long to keep polling before giving up.
+
+    Raises:
+        ProvisioningTimeoutError: If an endpoint never becomes ready.
+    """
+    endpoints = (
+        (f"http://{jump_address}/", "load balancer"),
+        (f"http://{jump_address}:{config.inventory.service_port}/healthz", "inventory service"),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    for url, label in endpoints:
+        last_error = "no attempt completed"
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(url, timeout=10)
+                if response.ok:
+                    _LOG.info("%s is serving at %s", label, url)
+                    break
+                last_error = f"HTTP {response.status_code}"
+            except requests.RequestException as error:
+                last_error = str(error)
+            time.sleep(_READINESS_POLL_SECONDS)
+        else:
+            raise ProvisioningTimeoutError(
+                f"The {label} at {url} did not become ready within {timeout_seconds}s; "
+                f"last error: {last_error}"
+            )
 
 
 def _seed_directory(config: ClusterConfig) -> Path:
