@@ -32,6 +32,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          # The Go module lives in goservice/, not at the repository root, so
+          # the action has to be told where to look. Without this it warns that
+          # no dependency file was found and skips caching entirely.
+          cache-dependency-path: goservice/go.mod
       - name: Go vet and test
         working-directory: goservice
         run: |
